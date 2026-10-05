@@ -1,0 +1,108 @@
+# Troubleshooting
+
+## Installation and startup
+
+**`uv: command not found`**
+Install uv (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and open a new shell, or add
+`~/.local/bin` to `PATH`.
+
+**`PolicyError: policy file not found: policy.yaml`**
+`GUARD_POLICY_PATH` is relative to the current directory. Run from the claude-guard directory or
+set an absolute path, e.g. `GUARD_POLICY_PATH=/path/to/claude-guard/policy.yaml`.
+
+**`invalid policy policy.yaml: ... Extra inputs are not permitted`**
+A key in `policy.yaml` is misspelled or not supported for that category. The error names the
+field; [policy.md](policy.md) lists every valid key.
+
+**`[Errno 48] error while attempting to bind on address ('127.0.0.1', 8787): address already in use`**
+Another process uses port 8787. Pick another one: `uv run claude-guard serve --port 8788` (and
+use that port in `ANTHROPIC_BASE_URL`), or find the process with `lsof -iTCP:8787`.
+
+## Proxy
+
+**Every request returns `502 claude-guard could not reach the upstream API`**
+The proxy cannot connect to `GUARD_UPSTREAM_URL`. Check network access and proxies:
+`curl -sI https://api.anthropic.com`.
+
+**`401 authentication_error` through the proxy**
+The proxy forwards `x-api-key` / `authorization` from the client unchanged; the key itself is
+wrong or missing. Check `ANTHROPIC_API_KEY` in the client's environment, not the proxy's.
+
+**`TypeError: Could not resolve authentication method` in the Python SDK**
+The SDK needs credentials before it sends anything, even to the proxy. Export
+`ANTHROPIC_API_KEY` (or log in with `ant auth login`).
+
+**A legitimate request is blocked**
+Find out which rule fired: the error message lists it, and so does the audit log
+(`uv run claude-guard report --since 1h`). Then:
+
+- reproduce it with `uv run claude-guard scan --file request.json`;
+- raise that category's `threshold`, set an action override in `direction_actions`, add an
+  `allowlist` regex (`secrets`, `dangerous_commands`) or an `allowed_hosts` entry
+  (`data_exfiltration`);
+- or disable the category.
+
+**A session keeps getting blocked after one injection attempt**
+Only the current turn (messages after the last assistant message) can block. If the injection is
+in the newest tool result, the request is blocked until that result is gone: rewind or clear the
+conversation in the client.
+
+**Streaming feels slow**
+In `buffer` mode nothing is shown until the full response has been generated and inspected; the
+proxy only sends `ping` events meanwhile. Use `GUARD_STREAM_MODE=audit` for live streaming,
+accepting that responses are then only logged, not blocked.
+
+**`audit_mode_violation` warnings in the log**
+With `GUARD_STREAM_MODE=audit` a streamed response violated the policy after it was delivered.
+Check the audit log entry with `source: "proxy:audit"`.
+
+## Hooks
+
+**Hooks do nothing**
+- Check `.claude/settings.json` contains the claude-guard entries (`/hooks` in Claude Code
+  lists them).
+- Run a hook by hand from the project directory with the exact command from settings.json:
+  `echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | <command>`.
+- Hooks only print something when there is a finding; empty output means "allow".
+
+**Every tool call is denied with `could not inspect this (fail mode closed)`**
+The hook itself failed: the reason contains the error (often a missing policy file because of a
+relative path). Re-run `install-hooks`, which writes absolute paths, or fix the command. Use
+`GUARD_FAIL_MODE=open` only if availability matters more than protection.
+
+**`install-hooks` says the file is not valid JSON**
+The installer never overwrites a file it cannot parse. Fix the JSON (`python -m json.tool
+.claude/settings.json` shows where it breaks) and run it again.
+
+**Hooks are slow**
+Heuristic hooks take about 0.4 s, mostly `uv run` start-up. If you enabled
+`GUARD_HOOK_LLM=true`, each hook may also call the judge; keep `llm_judge.timeout_seconds` below
+the hook `timeout` (15 s; 30 s for Stop).
+
+**The Stop summary reports the same thing again**
+Stop audits only transcript lines added since its last run, tracked in
+`logs/sessions/<session_id>.offset`. Deleting that file makes the next Stop audit the whole
+transcript again.
+
+## LLM judge
+
+**Findings with rule `judge_unavailable`**
+The judge timed out, hit an API error, refused, or returned invalid output after retries. With
+`GUARD_FAIL_MODE=closed` this blocks. Check `ANTHROPIC_API_KEY`, `GUARD_JUDGE_MODEL` and
+`llm_judge.timeout_seconds`; the log line `llm_judge_failed` names the error type.
+
+**The judge never runs**
+In `mode: uncertain` it only runs when the strongest heuristic confidence is inside
+`uncertain_range` (default 0.3–0.7). Use `mode: always` to judge every payload (more cost and
+latency). It is also off in hooks unless `GUARD_HOOK_LLM=true`.
+
+## Audit log
+
+**`report` shows no inspections**
+`report` reads `GUARD_AUDIT_PATH` relative to the current directory. Hooks installed by
+`install-hooks` write to the claude-guard directory's `logs/audit.jsonl`; pass
+`--file /path/to/claude-guard/logs/audit.jsonl` when running elsewhere.
+
+**Does the log contain secrets?**
+No. Excerpts, messages, errors and notes are passed through the secret scanner before writing;
+only masked previews such as `sk-ant-***abcd` are stored.

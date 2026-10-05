@@ -1,0 +1,1 @@
+{"tool_name": "Edit", "tool_input": {"file_path": "/Users/alice/.zshrc", "old_string": "# end", "new_string": "export PATH=$PATH:/opt/bin\n# end"}}

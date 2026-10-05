@@ -1,0 +1,205 @@
+"""Settings (env: GUARD_*) and policy.yaml loading."""
+
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from claude_guard.models import Action, Category, Direction, Severity
+
+# Single source of the default judge model; override with GUARD_JUDGE_MODEL.
+DEFAULT_JUDGE_MODEL = "claude-haiku-4-5"
+
+# Example credentials published in vendor documentation; never real secrets.
+DEFAULT_SECRET_ALLOWLIST = (
+    r"AKIAIOSFODNN7EXAMPLE",
+    r"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+)
+DEFAULT_ALLOWED_HOSTS = (
+    "api.anthropic.com",
+    "github.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+)
+
+
+class Settings(BaseSettings):
+    """Runtime settings read from the environment (prefix GUARD_) and an optional .env file."""
+
+    model_config = SettingsConfigDict(env_prefix="GUARD_", env_file=".env", extra="ignore")
+
+    policy_path: Path = Path("policy.yaml")
+    fail_mode: Literal["closed", "open"] = "closed"
+    judge_model: str = DEFAULT_JUDGE_MODEL
+    host: str = "127.0.0.1"
+    port: int = Field(default=8787, ge=1, le=65535)
+    upstream_url: str = "https://api.anthropic.com"
+    upstream_timeout: float = Field(default=600.0, gt=0)
+    stream_mode: Literal["buffer", "audit"] = "buffer"
+    hook_llm: bool = False
+    audit_path: Path = Path("logs/audit.jsonl")
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Read without the prefix so .env can hold it; when unset the Anthropic SDK falls back to
+    # its own credential resolution (environment, `ant auth login` profile).
+    anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+class PolicyError(Exception):
+    """Raised when policy.yaml is missing, unparsable or invalid."""
+
+
+class CategoryPolicy(BaseModel):
+    """Action and threshold for one category.
+
+    A finding whose confidence reaches `threshold` gets the category `action`; below it the
+    finding is downgraded to `warn`. Findings below `min_severity` are dropped.
+    `direction_actions` overrides `action` for specific directions.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    action: Action
+    threshold: float = Field(ge=0.0, le=1.0)
+    min_severity: Severity = Severity.LOW
+    direction_actions: dict[Direction, Action] = Field(default_factory=dict)
+
+    def resolve_action(self, direction: Direction, confidence: float, severity: Severity) -> Action:
+        """Map a detector finding to the action this policy prescribes."""
+        if not self.enabled or severity.rank < self.min_severity.rank:
+            return Action.ALLOW
+        if confidence < self.threshold:
+            return Action.WARN
+        return self.direction_actions.get(direction, self.action)
+
+
+def _compile_patterns(patterns: list[str]) -> list[str]:
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid regex {pattern!r}: {exc}") from exc
+    return patterns
+
+
+class SecretsPolicy(CategoryPolicy):
+    action: Action = Action.REDACT
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    entropy_min_length: int = Field(default=24, ge=8)
+    entropy_threshold: float = Field(default=4.0, gt=0.0)
+    allowlist: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SECRET_ALLOWLIST),
+        description="Regexes for known-safe values (e.g. example keys from vendor docs).",
+    )
+
+    _check_allowlist = field_validator("allowlist")(_compile_patterns)
+
+
+class PromptInjectionPolicy(CategoryPolicy):
+    action: Action = Action.BLOCK
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class DangerousCommandsPolicy(CategoryPolicy):
+    action: Action = Action.BLOCK
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    allowlist: list[str] = Field(
+        default_factory=list, description="Regexes for commands that are always allowed."
+    )
+
+    _check_allowlist = field_validator("allowlist")(_compile_patterns)
+
+
+class DataExfiltrationPolicy(CategoryPolicy):
+    action: Action = Action.BLOCK
+    threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    allowed_hosts: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_HOSTS))
+
+
+class LlmJudgePolicy(CategoryPolicy):
+    """LLM judge settings. The model itself comes from GUARD_JUDGE_MODEL."""
+
+    enabled: bool = False
+    action: Action = Action.BLOCK
+    threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    mode: Literal["always", "uncertain"] = "uncertain"
+    uncertain_range: tuple[float, float] = (0.3, 0.7)
+    timeout_seconds: float = Field(default=10.0, gt=0)
+    max_retries: int = Field(default=2, ge=0, le=10)
+    max_input_chars: int = Field(default=50_000, ge=1_000)
+
+    @field_validator("uncertain_range")
+    @classmethod
+    def _check_range(cls, value: tuple[float, float]) -> tuple[float, float]:
+        low, high = value
+        if not 0.0 <= low < high <= 1.0:
+            raise ValueError("uncertain_range must satisfy 0 <= low < high <= 1")
+        return value
+
+
+class Policy(BaseModel):
+    """Root of policy.yaml. Defaults mirror the shipped policy.yaml."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal[1] = 1
+    secrets: SecretsPolicy = Field(default_factory=SecretsPolicy)
+    prompt_injection: PromptInjectionPolicy = Field(default_factory=PromptInjectionPolicy)
+    dangerous_commands: DangerousCommandsPolicy = Field(default_factory=DangerousCommandsPolicy)
+    data_exfiltration: DataExfiltrationPolicy = Field(default_factory=DataExfiltrationPolicy)
+    llm_judge: LlmJudgePolicy = Field(default_factory=LlmJudgePolicy)
+
+    @model_validator(mode="after")
+    def _check_redact_usage(self) -> Policy:
+        # Redaction rewrites matched spans; only secrets detection yields spans worth replacing.
+        for category in Category:
+            if category is Category.SECRETS:
+                continue
+            policy = self.for_category(category)
+            actions = [policy.action, *policy.direction_actions.values()]
+            if Action.REDACT in actions:
+                raise ValueError(f"{category}: 'redact' is not supported, use 'warn' or 'block'")
+        return self
+
+    def for_category(self, category: Category) -> CategoryPolicy:
+        policy: CategoryPolicy = getattr(self, category.value)
+        return policy
+
+
+def load_policy(path: Path) -> Policy:
+    """Read and validate a policy file, raising PolicyError with a readable message."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise PolicyError(f"policy file not found: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise PolicyError(f"cannot parse {path}: {exc}") from exc
+
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise PolicyError(f"{path}: top level must be a mapping")
+
+    try:
+        return Policy.model_validate(raw)
+    except ValidationError as exc:
+        raise PolicyError(f"invalid policy {path}:\n{exc}") from exc

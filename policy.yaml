@@ -1,0 +1,76 @@
+# claude-guard policy.
+#
+# Every category has:
+#   enabled            turn the category on or off
+#   action             allow | warn | redact | block (redact is only valid for secrets)
+#   threshold          minimum detector confidence (0..1) to apply `action`;
+#                      findings below it are downgraded to `warn`
+#   min_severity       low | medium | high | critical; findings below are ignored
+#   direction_actions  optional per-direction override of `action`
+#                      (directions: request, response, tool_input, tool_output)
+#
+# The verdict for a payload is the strictest action across all findings:
+# block > redact > warn > allow.
+version: 1
+
+secrets:
+  enabled: true
+  action: redact
+  threshold: 0.5
+  min_severity: low
+  direction_actions: {}
+  # Generic high-entropy strings: minimum length and Shannon entropy (bits per char).
+  entropy_min_length: 24
+  entropy_threshold: 4.0
+  # Regexes for values that are safe to ignore (example keys from vendor documentation).
+  allowlist:
+    - "AKIAIOSFODNN7EXAMPLE"
+    - "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+prompt_injection:
+  enabled: true
+  action: block
+  threshold: 0.7
+  min_severity: low
+  # Example: only warn about injection found in tool results instead of blocking.
+  # direction_actions:
+  #   tool_output: warn
+  direction_actions: {}
+
+dangerous_commands:
+  enabled: true
+  action: block
+  threshold: 0.7
+  min_severity: low
+  direction_actions: {}
+  # Regexes for commands that are always allowed.
+  allowlist: []
+
+data_exfiltration:
+  enabled: true
+  action: block
+  threshold: 0.6
+  min_severity: low
+  direction_actions: {}
+  # Hosts that tools may send data to without being flagged.
+  allowed_hosts:
+    - api.anthropic.com
+    - github.com
+    - pypi.org
+    - files.pythonhosted.org
+
+llm_judge:
+  # Uses the model from GUARD_JUDGE_MODEL and ANTHROPIC_API_KEY. Adds cost and latency.
+  enabled: false
+  action: block
+  threshold: 0.8
+  min_severity: low
+  direction_actions: {}
+  # always: judge every payload; uncertain: only when the strongest heuristic
+  # confidence falls inside uncertain_range.
+  mode: uncertain
+  uncertain_range: [0.3, 0.7]
+  timeout_seconds: 10.0
+  max_retries: 2
+  # Longer content is truncated before being sent to the judge.
+  max_input_chars: 50000
