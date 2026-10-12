@@ -34,7 +34,10 @@ DEFAULT_SECRET_ALLOWLIST = (
 class Settings(BaseSettings):
     """Runtime settings read from the environment (prefix GUARD_) and an optional .env file."""
 
-    model_config = SettingsConfigDict(env_prefix="GUARD_", env_file=".env", extra="ignore")
+    # Empty values (`GUARD_TLS_CERTFILE=` as in .env.example) mean "not set", not "".
+    model_config = SettingsConfigDict(
+        env_prefix="GUARD_", env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     policy_path: Path = Path("policy.yaml")
     fail_mode: Literal["closed", "open"] = "closed"

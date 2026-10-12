@@ -58,6 +58,26 @@ def test_settings_read_anthropic_key_from_dotenv(tmp_path: Path) -> None:
     assert "from-dotenv" not in repr(settings)
 
 
+def test_dotenv_copied_from_example_works(tmp_path: Path, repo_root: Path) -> None:
+    # README: `cp .env.example .env`. Empty values must mean "not set".
+    (tmp_path / ".env").write_text(
+        (repo_root / ".env.example").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    settings = Settings()
+    assert settings.tls_certfile is None
+    assert settings.tls_keyfile is None
+    assert settings.anthropic_api_key is None
+    assert settings == Settings(_env_file=None)
+
+
+def test_empty_env_value_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GUARD_TLS_CERTFILE", "")
+    monkeypatch.setenv("GUARD_PORT", "")
+    settings = Settings()
+    assert settings.tls_certfile is None
+    assert settings.port == 8787
+
+
 def test_settings_reject_invalid_fail_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GUARD_FAIL_MODE", "sometimes")
     with pytest.raises(ValueError, match="fail_mode"):
