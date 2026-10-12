@@ -58,6 +58,18 @@ The endpoint carries content the proxy cannot inspect (Files API uploads, unknow
 Upload the file without the proxy, or set `GUARD_PASSTHROUGH=allow` and accept that it is not
 inspected. See [proxy.md](proxy.md#uninspected-endpoints).
 
+**`401 authentication_error: missing or invalid x-claude-guard-token header`**
+`GUARD_PROXY_TOKEN` is set on the proxy. Send the same value in the `x-claude-guard-token`
+header: `ANTHROPIC_CUSTOM_HEADERS="x-claude-guard-token: <token>"` for Claude Code,
+`default_headers` for the SDKs. `/healthz` needs no token.
+
+**`413 request_too_large: claude-guard: request body exceeds ... bytes`**
+The body is above `GUARD_MAX_BODY_BYTES` (32 MiB). Raise it, e.g. for large Message Batches.
+
+**Streamed response ends with `response too large to inspect`**
+The stream exceeded `GUARD_MAX_STREAM_BYTES` in `buffer` mode and `GUARD_FAIL_MODE=closed`.
+Raise the limit, or use `GUARD_FAIL_MODE=open` to deliver such responses uninspected.
+
 **A legitimate request is blocked**
 Find out which rule fired: the error message lists it, and so does the audit log
 (`uv run claude-guard report --since 1h`). Then:

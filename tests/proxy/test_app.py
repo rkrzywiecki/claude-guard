@@ -72,12 +72,14 @@ def make_app(
     stream_mode: Literal["buffer", "audit"] = "buffer",
     ping_interval: float = 10.0,
     passthrough: Literal["block", "allow"] = "block",
+    **overrides: Any,
 ) -> FastAPI:
     settings = Settings(
         upstream_url=UPSTREAM,
         stream_mode=stream_mode,
         audit_path=audit_path,
         passthrough=passthrough,
+        **overrides,
     )
     return create_app(
         settings,
@@ -92,8 +94,9 @@ def make_client(
     stream_mode: Literal["buffer", "audit"] = "buffer",
     ping_interval: float = 10.0,
     passthrough: Literal["block", "allow"] = "block",
+    **overrides: Any,
 ) -> httpx.AsyncClient:
-    app = make_app(audit_path, stream_mode, ping_interval, passthrough)
+    app = make_app(audit_path, stream_mode, ping_interval, passthrough, **overrides)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://guard")
 
 
@@ -668,3 +671,132 @@ async def test_passthrough_allow_forwards_other_endpoints(
         response = await http.post("/v1/files", content=b"--boundary--", headers=CLIENT_HEADERS)
     assert response.status_code == 200
     assert route.calls.last.request.content == b"--boundary--"
+
+
+# --- Limits -------------------------------------------------------------------------
+
+
+async def test_oversized_body_rejected(audit_path: Path, router: respx.MockRouter) -> None:
+    route = router.post("/v1/messages").mock(return_value=httpx.Response(200, json={}))
+    async with make_client(audit_path, max_body_bytes=2048) as http:
+        response = await http.post("/v1/messages", json=chat("x" * 4096))
+        metrics = (await http.get("/metrics")).text
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "request_too_large"
+    assert "GUARD_MAX_BODY_BYTES" in response.json()["error"]["message"]
+    assert not route.called
+    assert "claude_guard_limit_exceeded_total 1" in metrics
+
+
+async def test_oversized_chunked_body_rejected(audit_path: Path, router: respx.MockRouter) -> None:
+    route = router.post("/v1/messages/batches").mock(return_value=httpx.Response(200, json={}))
+
+    async def body() -> AsyncIterator[bytes]:
+        for _ in range(10):
+            yield b"x" * 1024
+
+    async with make_client(audit_path, max_body_bytes=4096) as http:
+        response = await http.post("/v1/messages/batches", content=body())
+    assert response.status_code == 413
+    assert not route.called
+
+
+async def test_body_within_limit_forwarded_unchanged(
+    audit_path: Path, router: respx.MockRouter
+) -> None:
+    route = router.post("/v1/messages").mock(
+        return_value=httpx.Response(200, json=message([{"type": "text", "text": "ok"}]))
+    )
+    body = json.dumps(chat("y" * 1500)).encode()
+    async with make_client(audit_path, max_body_bytes=2048) as http:
+        response = await http.post(
+            "/v1/messages", content=body, headers={"content-type": "application/json"}
+        )
+    assert response.status_code == 200
+    assert route.calls.last.request.content == body
+
+
+def big_text_stream() -> list[bytes]:
+    return text_stream(*["word " * 100] * 20)
+
+
+async def test_oversized_stream_fails_closed(audit_path: Path, router: respx.MockRouter) -> None:
+    router.post("/v1/messages").mock(return_value=sse_response(big_text_stream()))
+    async with make_client(audit_path, max_stream_bytes=2048) as http:
+        response = await http.post("/v1/messages", json=chat(stream=True))
+    events, message_out = parse_sse(response.content)
+    assert events == ["error"]
+    assert message_out is None
+    assert b"too large to inspect" in response.content
+
+
+async def test_oversized_stream_fails_open_and_delivers_everything(
+    audit_path: Path, router: respx.MockRouter
+) -> None:
+    chunks = big_text_stream()
+    router.post("/v1/messages").mock(return_value=sse_response(chunks))
+    async with make_client(audit_path, max_stream_bytes=2048, fail_mode="open") as http:
+        response = await http.post("/v1/messages", json=chat(stream=True))
+    assert response.content == b"".join(chunks)
+
+
+# --- Proxy token --------------------------------------------------------------------
+
+PROXY_TOKEN = "guard-" + "token-value-123"
+
+
+@pytest.fixture
+async def token_client(audit_path: Path) -> AsyncIterator[httpx.AsyncClient]:
+    async with make_client(audit_path, proxy_token=PROXY_TOKEN) as http:
+        yield http
+
+
+@pytest.mark.parametrize("token", [None, "", "wrong", PROXY_TOKEN + "x"])
+async def test_requests_without_valid_token_rejected(
+    token_client: httpx.AsyncClient, router: respx.MockRouter, token: str | None
+) -> None:
+    route = router.post("/v1/messages").mock(return_value=httpx.Response(200, json={}))
+    headers = {"x-claude-guard-token": token} if token is not None else {}
+    response = await token_client.post("/v1/messages", json=chat(), headers=headers)
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "authentication_error"
+    assert not route.called
+
+
+async def test_valid_token_accepted_and_not_forwarded(
+    token_client: httpx.AsyncClient, router: respx.MockRouter
+) -> None:
+    route = router.post("/v1/messages").mock(
+        return_value=httpx.Response(200, json=message([{"type": "text", "text": "ok"}]))
+    )
+    response = await token_client.post(
+        "/v1/messages",
+        json=chat(),
+        headers={**CLIENT_HEADERS, "x-claude-guard-token": PROXY_TOKEN},
+    )
+    assert response.status_code == 200
+    sent = route.calls.last.request.headers
+    assert "x-claude-guard-token" not in sent
+    assert sent["x-api-key"] == API_KEY
+
+
+async def test_token_protects_metrics_but_not_healthz(token_client: httpx.AsyncClient) -> None:
+    assert (await token_client.get("/healthz")).status_code == 200
+    assert (await token_client.get("/metrics")).status_code == 401
+    metrics = await token_client.get("/metrics", headers={"x-claude-guard-token": PROXY_TOKEN})
+    assert "claude_guard_unauthorized_total 1" in metrics.text
+
+
+async def test_token_never_logged(
+    token_client: httpx.AsyncClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await token_client.post("/v1/messages", json=chat(), headers={"x-claude-guard-token": "bad"})
+    await token_client.get("/metrics", headers={"x-claude-guard-token": PROXY_TOKEN})
+    captured = capsys.readouterr()
+    assert PROXY_TOKEN not in captured.out + captured.err
+
+
+async def test_token_checked_before_body_limit(audit_path: Path) -> None:
+    async with make_client(audit_path, proxy_token=PROXY_TOKEN, max_body_bytes=1024) as http:
+        response = await http.post("/v1/messages", content=b"x" * 4096)
+    assert response.status_code == 401

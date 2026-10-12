@@ -67,14 +67,17 @@ def test_dotenv_copied_from_example_works(tmp_path: Path, repo_root: Path) -> No
     assert settings.tls_certfile is None
     assert settings.tls_keyfile is None
     assert settings.anthropic_api_key is None
+    assert settings.proxy_token is None
     assert settings == Settings(_env_file=None)
 
 
 def test_empty_env_value_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GUARD_TLS_CERTFILE", "")
+    monkeypatch.setenv("GUARD_PROXY_TOKEN", "")
     monkeypatch.setenv("GUARD_PORT", "")
     settings = Settings()
     assert settings.tls_certfile is None
+    assert settings.proxy_token is None
     assert settings.port == 8787
 
 

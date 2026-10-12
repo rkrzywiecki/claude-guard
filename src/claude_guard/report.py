@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
-from claude_guard.audit import AuditRecord
+from claude_guard.audit import AuditRecord, audit_files
 from claude_guard.models import Action
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
@@ -54,22 +54,24 @@ class Report(BaseModel):
 
 
 def load_records(path: Path, since: datetime) -> tuple[list[AuditRecord], int]:
-    """Read records at or after `since`; returns (records, number of unreadable lines)."""
+    """Read records at or after `since` from the log and its rotated copies.
+
+    Returns (records, number of unreadable lines).
+    """
     records: list[AuditRecord] = []
     skipped = 0
-    if not path.exists():
-        return records, skipped
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                record = AuditRecord.model_validate_json(line)
-            except ValidationError:
-                skipped += 1
-                continue
-            if record.timestamp >= since:
-                records.append(record)
+    for file in audit_files(path):
+        with file.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = AuditRecord.model_validate_json(line)
+                except ValidationError:
+                    skipped += 1
+                    continue
+                if record.timestamp >= since:
+                    records.append(record)
     return records, skipped
 
 

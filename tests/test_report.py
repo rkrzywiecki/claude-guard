@@ -84,6 +84,19 @@ def test_load_records_filters_by_time_and_skips_bad_lines(tmp_path: Path) -> Non
     assert skipped == 2
 
 
+def test_load_records_includes_rotated_files(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    (tmp_path / "audit.jsonl.2").write_text(
+        record(Action.BLOCK, age=timedelta(minutes=30)).model_dump_json() + "\n", encoding="utf-8"
+    )
+    (tmp_path / "audit.jsonl.1").write_text(
+        record(Action.WARN, age=timedelta(minutes=20)).model_dump_json() + "\n", encoding="utf-8"
+    )
+    path.write_text(record(Action.ALLOW).model_dump_json() + "\n", encoding="utf-8")
+    records, _ = load_records(path, NOW - timedelta(hours=1))
+    assert [r.action for r in records] == [Action.BLOCK, Action.WARN, Action.ALLOW]
+
+
 def test_load_records_missing_file(tmp_path: Path) -> None:
     assert load_records(tmp_path / "none.jsonl", NOW) == ([], 0)
 

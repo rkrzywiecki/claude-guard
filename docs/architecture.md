@@ -100,5 +100,12 @@ valid. The original payload is never modified.
 ```
 
 Excerpts, messages, errors and notes go through the secret scanner before writing, so secrets
-never reach the log, even when quoted next to an injection pattern. Write failures are logged
+never reach the log, even when quoted next to an injection pattern.
+
+The log is rotated by size: when a record would grow it past `GUARD_AUDIT_MAX_BYTES` (10 MiB),
+`audit.jsonl` becomes `audit.jsonl.1`, older copies shift up and only `GUARD_AUDIT_BACKUPS` (5)
+are kept. Hooks run as separate processes, so every write and rotation happens under an
+exclusive lock on `audit.jsonl.lock` (POSIX `flock`; no lock on Windows). `claude-guard report`
+reads the rotated copies too. The log and its copies are protected from the agent
+(`guard_tamper`). Write failures are logged
 and never interrupt traffic. Hooks run as separate processes, so each record is a single append.

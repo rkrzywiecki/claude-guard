@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import secrets
 from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -41,6 +42,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import JsonValue
 from starlette.background import BackgroundTask
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from claude_guard.config import Settings, get_settings
 from claude_guard.engine import GuardEngine
@@ -62,6 +64,9 @@ FORWARDED_PREFIXES = ("anthropic-",)
 DROPPED_RESPONSE_HEADERS = frozenset(
     {"content-length", "content-encoding", "transfer-encoding", "connection", "keep-alive"}
 )
+TOKEN_HEADER = "x-claude-guard-token"  # noqa: S105 (a header name, not a secret)
+# Reachable without the proxy token: liveness probes.
+OPEN_PATHS = frozenset({"/healthz"})
 REQUEST_ACTION_HEADER = "x-claude-guard-request-action"
 RESPONSE_ACTION_HEADER = "x-claude-guard-response-action"
 DEFAULT_PING_INTERVAL = 10.0
@@ -129,6 +134,8 @@ class Metrics:
             "upstream_errors_total",
             "guard_errors_total",
             "passthrough_blocked_total",
+            "limit_exceeded_total",
+            "unauthorized_total",
         ):
             lines.append(f"# TYPE claude_guard_{name} counter")
             lines.append(f"claude_guard_{name} {self.counters[name]}")
@@ -144,6 +151,83 @@ def error_response(
         status_code=status_code,
         headers=headers,
     )
+
+
+class TokenMiddleware:
+    """Rejects requests without the shared proxy token (GUARD_PROXY_TOKEN), before any body is
+    read. The token header is never forwarded upstream or logged."""
+
+    def __init__(self, app: ASGIApp, token: str, metrics: Metrics) -> None:
+        self._app = app
+        self._token = token.encode()
+        self._metrics = metrics
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"] not in OPEN_PATHS:
+            supplied = dict(scope["headers"]).get(TOKEN_HEADER.encode(), b"")
+            if not secrets.compare_digest(supplied, self._token):
+                self._metrics.counters["unauthorized_total"] += 1
+                log.warning("proxy_unauthorized", path=scope["path"])
+                response = error_response(
+                    401,
+                    "authentication_error",
+                    f"claude-guard: missing or invalid {TOKEN_HEADER} header",
+                )
+                await response(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
+
+
+class BodyLimitMiddleware:
+    """Reads the request body up to `max_bytes` and replays it to the app; larger bodies get
+    HTTP 413 without reaching a handler."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int, metrics: Metrics) -> None:
+        self._app = app
+        self._max_bytes = max_bytes
+        self._metrics = metrics
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        declared = dict(scope["headers"]).get(b"content-length", b"")
+        too_large = declared.isdigit() and int(declared) > self._max_bytes
+        chunks: list[bytes] = []
+        size = 0
+        while not too_large:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            too_large = size > self._max_bytes
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        if too_large:
+            self._metrics.counters["limit_exceeded_total"] += 1
+            log.warning("request_too_large", path=scope["path"], limit=self._max_bytes)
+            response = error_response(
+                413,
+                "request_too_large",
+                f"claude-guard: request body exceeds {self._max_bytes} bytes "
+                "(GUARD_MAX_BODY_BYTES)",
+            )
+            await response(scope, receive, send)
+            return
+
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self._app(scope, replay, send)
 
 
 def blocked_message(message: JsonObject, reason: str) -> JsonObject:
@@ -195,6 +279,11 @@ def create_app(
             await client.aclose()
 
     app = FastAPI(title="claude-guard", lifespan=lifespan)
+    # Added last runs first: the token is checked before any body is read.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes, metrics=metrics)
+    token = settings.proxy_token.get_secret_value() if settings.proxy_token else ""
+    if token:
+        app.add_middleware(TokenMiddleware, token=token, metrics=metrics)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -297,15 +386,24 @@ def create_app(
         parser = SSEParser()
         accumulator = MessageAccumulator()
         received: list[SSEEvent] = []
+        chunks = upstream_response.aiter_bytes()
+        overflow: list[bytes] = []
 
-        async def collect() -> None:
-            async for chunk in upstream_response.aiter_bytes():
+        async def collect() -> bool:
+            """Buffer the stream; False when it exceeds GUARD_MAX_STREAM_BYTES."""
+            size = 0
+            async for chunk in chunks:
+                size += len(chunk)
+                if size > settings.max_stream_bytes:
+                    overflow.append(chunk)  # kept raw: delivered as is if failing open
+                    return False
                 for event in parser.feed(chunk):
                     received.append(event)
                     accumulator.add(event)
             for event in parser.flush():
                 received.append(event)
                 accumulator.add(event)
+            return True
 
         task = asyncio.create_task(collect())
         try:
@@ -317,6 +415,24 @@ def create_app(
         if task.exception() is not None:
             metrics.counters["upstream_errors_total"] += 1
             yield stream_error_event("claude-guard lost the upstream stream")
+            return
+        if not task.result():
+            metrics.counters["limit_exceeded_total"] += 1
+            log.warning(
+                "stream_too_large", limit=settings.max_stream_bytes, fail_mode=settings.fail_mode
+            )
+            if settings.fail_mode == "closed":
+                yield stream_error_event(
+                    "claude-guard: response too large to inspect (GUARD_MAX_STREAM_BYTES)"
+                )
+                return
+            # Fail open: deliver what was buffered, then the rest live, uninspected.
+            for event in received:
+                yield event.raw
+            yield parser.take_pending()
+            yield overflow[0]
+            async for chunk in chunks:
+                yield chunk
             return
 
         message = accumulator.result()

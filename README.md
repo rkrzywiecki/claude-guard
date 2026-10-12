@@ -194,7 +194,7 @@ override with `--direction`. Every inspection (proxy, hooks, scan) is appended t
 
 ## Configuration
 
-Environment variables (or `.env`, see [.env.example](.env.example)):
+Environment variables (or `.env`, see [.env.example](.env.example); an empty value means "not set"):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -212,7 +212,12 @@ Environment variables (or `.env`, see [.env.example](.env.example)):
 | `GUARD_STREAM_MODE` | `buffer` | `buffer`: inspect before streaming; `audit`: stream live, inspect afterwards. |
 | `GUARD_PASSTHROUGH` | `block` | `/v1/*` endpoints the proxy cannot inspect (e.g. Files API uploads): `block` answers 403, `allow` forwards them as is. |
 | `GUARD_HOOK_LLM` | `false` | Use the LLM judge inside hooks. |
+| `GUARD_MAX_BODY_BYTES` | `33554432` (32 MiB) | Larger request bodies get HTTP 413 `request_too_large`. Raise it for big Message Batches. |
+| `GUARD_MAX_STREAM_BYTES` | `33554432` (32 MiB) | Buffered stream above this size is not inspected: error event (`closed`) or delivered uninspected (`open`). |
+| `GUARD_PROXY_TOKEN` | – | Shared secret clients must send in `x-claude-guard-token` (all endpoints except `/healthz`). Recommended whenever the proxy is reachable from the network. |
 | `GUARD_AUDIT_PATH` | `logs/audit.jsonl` | Audit log. |
+| `GUARD_AUDIT_MAX_BYTES` | `10485760` (10 MiB) | Rotate the audit log at this size; `0` disables rotation. |
+| `GUARD_AUDIT_BACKUPS` | `5` | Rotated copies kept (`audit.jsonl.1` is the newest). |
 | `GUARD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 
 `policy.yaml` sets, per category (`secrets`, `prompt_injection`, `dangerous_commands`,

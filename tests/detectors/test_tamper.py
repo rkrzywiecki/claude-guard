@@ -38,12 +38,21 @@ def write(tool: str, path: str, cwd: Path | None = None) -> InspectionContext:
 
 
 def test_protected_paths_cover_policy_audit_and_offsets() -> None:
-    settings = Settings(policy_path=Path("/g/policy.yaml"), audit_path=Path("/g/logs/a.jsonl"))
+    settings = Settings(
+        policy_path=Path("/g/policy.yaml"), audit_path=Path("/g/logs/a.jsonl"), audit_backups=2
+    )
     assert protected_paths(settings) == (
         Path("/g/policy.yaml"),
         Path("/g/logs/a.jsonl"),
+        Path("/g/logs/a.jsonl.1"),
+        Path("/g/logs/a.jsonl.2"),
         Path("/g/logs/sessions"),
     )
+
+
+async def test_rotated_audit_log_is_protected(detector: CommandsDetector, guard_dir: Path) -> None:
+    command = f"rm {guard_dir}/logs/audit.jsonl.3"
+    assert await rules(detector, bash(command)) == ["guard_tamper"]
 
 
 # --- Guard files: absolute paths --------------------------------------------------

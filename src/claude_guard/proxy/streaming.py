@@ -50,6 +50,11 @@ class SSEParser:
                 events.append(_parse_event(raw + b"\n\n"))
         return events
 
+    def take_pending(self) -> bytes:
+        """Bytes of an event not yet terminated, removed from the parser."""
+        pending, self._buffer = self._buffer, b""
+        return pending
+
     def flush(self) -> list[SSEEvent]:
         """Return a trailing event that was not terminated by a blank line."""
         raw, self._buffer = self._buffer, b""

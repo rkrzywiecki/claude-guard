@@ -198,6 +198,39 @@ on loopback if they run on the same host (no extra settings). If the forwarder r
 the network, bind to that interface and set `GUARD_ALLOW_INSECURE_BIND=true`; `serve` then logs
 an `insecure_bind` warning at startup. Make sure only the forwarder can reach that port.
 
+## Client authentication
+
+By default anyone who can reach the proxy can use it (with their own API key). Set
+`GUARD_PROXY_TOKEN` to require a shared secret in the `x-claude-guard-token` header on every
+endpoint except `/healthz` (so liveness probes keep working; `/metrics` is protected). The check
+runs before the body is read; the header is never forwarded upstream or logged. A missing or
+wrong token gets HTTP 401 `authentication_error`.
+
+```bash
+export GUARD_PROXY_TOKEN="$(openssl rand -hex 32)"
+uv run claude-guard serve --host 0.0.0.0 --tls-certfile cert.pem --tls-keyfile key.pem
+
+# Claude Code
+export ANTHROPIC_CUSTOM_HEADERS="x-claude-guard-token: $GUARD_PROXY_TOKEN"
+# Python SDK
+client = anthropic.Anthropic(base_url="https://guard.example:8787",
+                             default_headers={"x-claude-guard-token": token})
+```
+
+`serve` logs a `proxy_without_token` warning when it listens on a non-loopback address without a
+token.
+
+## Limits
+
+| Setting | Default | Exceeded |
+|---------|---------|----------|
+| `GUARD_MAX_BODY_BYTES` | 32 MiB | HTTP 413 `request_too_large`, nothing is inspected or forwarded (checked against `content-length` and while reading chunked bodies) |
+| `GUARD_MAX_STREAM_BYTES` | 32 MiB | `buffer` mode stops buffering: with `GUARD_FAIL_MODE=closed` the client gets an SSE `error` event; with `open` everything is delivered, uninspected |
+
+32 MiB matches the Messages API request limit. Message Batches can be larger: raise
+`GUARD_MAX_BODY_BYTES` if you send big batches through the proxy. Exceeded limits are counted in
+`claude_guard_limit_exceeded_total` and logged as `request_too_large` / `stream_too_large`.
+
 ## Metrics
 
 ```
@@ -207,6 +240,8 @@ claude_guard_requests_total 42
 claude_guard_upstream_errors_total 0
 claude_guard_guard_errors_total 0
 claude_guard_passthrough_blocked_total 0
+claude_guard_limit_exceeded_total 0
+claude_guard_unauthorized_total 0
 ```
 
 `verdicts_total` has a series for every direction/action pair. `guard_errors_total` counts

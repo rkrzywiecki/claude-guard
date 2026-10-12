@@ -1,11 +1,12 @@
 """Tests for the JSONL audit log."""
 
 import json
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from claude_guard.audit import AuditLog, AuditRecord
+from claude_guard.audit import AuditLog, AuditRecord, audit_files
 from claude_guard.config import Policy
 from claude_guard.detectors.secrets import SecretScanner
 from claude_guard.models import Action, Category, Direction, Finding, Severity, Verdict
@@ -73,3 +74,68 @@ def test_write_failure_does_not_raise(tmp_path: Path) -> None:
     blocked.write_text("not a directory", encoding="utf-8")
     audit = AuditLog(blocked / "audit.jsonl", SecretScanner(Policy().secrets))
     audit.record(Verdict(direction=Direction.REQUEST, action=Action.ALLOW))
+
+
+# --- Rotation -----------------------------------------------------------------------
+
+
+def small_verdict() -> Verdict:
+    return Verdict(direction=Direction.REQUEST, action=Action.ALLOW)
+
+
+def lines_in(files: list[Path]) -> int:
+    return sum(len(f.read_text(encoding="utf-8").splitlines()) for f in files)
+
+
+def test_rotation_keeps_backups(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path, SecretScanner(Policy().secrets), max_bytes=400, backups=3)
+    for _ in range(60):
+        audit.record(small_verdict(), source="test")
+
+    files = audit_files(path)
+    assert [f.name for f in files] == [
+        "audit.jsonl.3",
+        "audit.jsonl.2",
+        "audit.jsonl.1",
+        "audit.jsonl",
+    ]
+    assert all(f.stat().st_size <= 400 for f in files)
+    assert not (tmp_path / "audit.jsonl.4").exists()
+    # Records are whole lines in every file.
+    for file in files:
+        for line in file.read_text(encoding="utf-8").splitlines():
+            AuditRecord.model_validate_json(line)
+
+
+def test_no_rotation_when_disabled(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path, SecretScanner(Policy().secrets), max_bytes=0)
+    for _ in range(50):
+        audit.record(small_verdict())
+    assert audit_files(path) == [path]
+    assert lines_in([path]) == 50
+
+
+def test_audit_files_order_and_missing(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    assert audit_files(path) == []
+    for name in ("audit.jsonl.10", "audit.jsonl.2", "audit.jsonl", "audit.jsonl.lock", "x.1"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    assert [f.name for f in audit_files(path)] == ["audit.jsonl.10", "audit.jsonl.2", "audit.jsonl"]
+
+
+def write_records(path: str, count: int) -> None:
+    audit = AuditLog(Path(path), SecretScanner(Policy().secrets), max_bytes=2_000, backups=100)
+    for _ in range(count):
+        audit.record(small_verdict(), source="hook")
+
+
+def test_concurrent_writers_lose_no_records(tmp_path: Path) -> None:
+    # Hooks are separate processes that may rotate the log at the same time.
+    path = tmp_path / "audit.jsonl"
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        list(pool.map(write_records, [str(path)] * 4, [40] * 4))
+    files = audit_files(path)
+    assert len(files) > 2
+    assert lines_in(files) == 160

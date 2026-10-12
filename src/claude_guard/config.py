@@ -54,8 +54,17 @@ class Settings(BaseSettings):
     stream_mode: Literal["buffer", "audit"] = "buffer"
     # Endpoints the proxy cannot inspect (e.g. Files API uploads): refuse or forward them.
     passthrough: Literal["block", "allow"] = "block"
+    # Proxy limits: larger request bodies get HTTP 413; a buffered stream above the limit is not
+    # inspected (fail mode applies).
+    max_body_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
+    max_stream_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
+    # Shared secret clients send in the x-claude-guard-token header; required when set.
+    proxy_token: SecretStr | None = None
     hook_llm: bool = False
     audit_path: Path = Path("logs/audit.jsonl")
+    # Rotate the audit log at this size (0 disables rotation), keeping this many old files.
+    audit_max_bytes: int = Field(default=10 * 1024 * 1024, ge=0)
+    audit_backups: int = Field(default=5, ge=1, le=100)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Read without the prefix so .env can hold it; when unset the Anthropic SDK falls back to
     # its own credential resolution (environment, `ant auth login` profile).
@@ -68,9 +77,11 @@ def get_settings() -> Settings:
 
 
 def protected_paths(settings: Settings) -> tuple[Path, ...]:
-    """Guard files an agent must not modify: the policy, the audit log and Stop offsets."""
+    """Guard files an agent must not modify: the policy, the audit log (with rotated copies) and
+    Stop offsets."""
     audit = settings.audit_path.expanduser()
-    return (settings.policy_path.expanduser(), audit, audit.parent / "sessions")
+    rotated = (audit.with_name(f"{audit.name}.{n}") for n in range(1, settings.audit_backups + 1))
+    return (settings.policy_path.expanduser(), audit, *rotated, audit.parent / "sessions")
 
 
 class PolicyError(Exception):

@@ -34,7 +34,12 @@ def serve(
     import uvicorn
 
     from claude_guard.proxy.app import create_app
-    from claude_guard.proxy.server import ServeConfigError, build_serve_config, uvicorn_config
+    from claude_guard.proxy.server import (
+        ServeConfigError,
+        build_serve_config,
+        is_loopback,
+        uvicorn_config,
+    )
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -46,11 +51,18 @@ def serve(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
 
+    log = structlog.get_logger()
     if config.insecure_bind:
-        structlog.get_logger().warning(
+        log.warning(
             "insecure_bind",
             host=config.host,
             message="plain HTTP on a non-loopback address; TLS must be terminated in front",
+        )
+    if not is_loopback(config.host) and settings.proxy_token is None:
+        log.warning(
+            "proxy_without_token",
+            host=config.host,
+            message="reachable from the network without GUARD_PROXY_TOKEN",
         )
     uvicorn.Server(uvicorn_config(create_app(settings), config, settings.log_level)).run()
 

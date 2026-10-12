@@ -73,7 +73,12 @@ class GuardEngine:
         self._judge = judge
         self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
         self._scanner = SecretScanner(policy.secrets)
-        self._audit = audit or AuditLog(settings.audit_path, self._scanner)
+        self._audit = audit or AuditLog(
+            settings.audit_path,
+            self._scanner,
+            max_bytes=settings.audit_max_bytes,
+            backups=settings.audit_backups,
+        )
 
     @classmethod
     def from_settings(
