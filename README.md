@@ -20,6 +20,8 @@ It plugs in two ways, sharing one engine:
 2. **Claude Code hooks**: `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` hooks, no
    proxy needed.
 
+![claude-guard blocking a prompt injection, redacting a secret and denying rm -rf /](docs/demo.gif)
+
 ```mermaid
 flowchart LR
     CC[Claude Code / SDK / app] -- ANTHROPIC_BASE_URL --> P[claude-guard proxy]
@@ -38,6 +40,30 @@ flowchart LR
 
 New here? Follow the step-by-step [tutorial](docs/tutorial.md).
 More detail: [docs/architecture.md](docs/architecture.md).
+
+## How it compares
+
+Most guardrail tools are general-purpose libraries you call from your own code. claude-guard is
+narrower: it targets Claude agents, plugs in without code changes (an API proxy or Claude Code
+hooks) and checks what the agent is about to do, not only what it reads.
+
+| | claude-guard | [LLM Guard](https://github.com/protectai/llm-guard) | [LlamaFirewall](https://github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall) | [NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails) | Lakera Guard |
+|---|---|---|---|---|---|
+| Type, license | CLI, proxy, hooks; Apache-2.0 | library and API server; MIT, **archived** | library; MIT | library and server; Apache-2.0 | hosted API, commercial (now part of Check Point) |
+| Integration | `ANTHROPIC_BASE_URL` or Claude Code hooks, no code changes | calls in your code | calls in your code (OpenAI Agents SDK and LangChain examples) | rails config around your LLM calls, OpenAI-style chat server | API call from your code |
+| Prompt injection | heuristics with deobfuscation, optional Claude judge | ML classifier | PromptGuard 2 classifier; AlignmentCheck audits the agent's trace with an LLM | perplexity heuristics, classifier, LLM self-check | hosted classifier |
+| Tool results as untrusted input | yes, by content type | scans any text you pass | yes (AlignmentCheck) | retrieval and execution rails | scans any text you pass |
+| Agent actions before they run (shell, file writes, exfiltration, guard tampering) | built-in rules, per-tool allow/deny | – | CodeShield for generated code, custom scanners | execution rails you define | – |
+| Secrets and personal data | regex, entropy, Luhn; redaction in the proxy | secrets and PII (anonymization) | regex scanners you define | sensitive data detection | PII detection |
+| Runs offline | yes (heuristics); the judge calls the Claude API | yes, with local models | PromptGuard locally; AlignmentCheck uses a hosted LLM | depends on the rails | no |
+
+Compiled in October 2026 from each project's documentation; check them for current details.
+
+Trade-offs: trained classifiers (LLM Guard, PromptGuard, Lakera) generalize better to paraphrased
+injections than claude-guard's heuristics, which are fast, explainable and need no model, but
+miss what their rules do not describe (see [Limitations](#limitations)). claude-guard's LLM judge
+narrows that gap at the cost of an API call. The tools are not exclusive: an application can screen text with a
+classifier and still send its Claude traffic through claude-guard.
 
 ## Requirements
 
@@ -258,6 +284,14 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
 
 ## Examples
+
+The animation at the top is rendered from real runs of the `scan` and `hook` commands. Regenerate
+it after changing their output (`--font` takes a monospace TrueType font if Menlo is not
+available):
+
+```bash
+uv run --with pillow python scripts/demo_gif.py
+```
 
 ### Prompt injection in a tool result: blocked
 
