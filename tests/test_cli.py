@@ -174,3 +174,18 @@ def test_report_invalid_since(env: Path) -> None:
     code, _, err = run("report", "--since", "yesterday")
     assert code == 2
     assert "invalid --since" in err
+
+
+# --- serve ------------------------------------------------------------------------
+
+
+def test_serve_refuses_plain_http_on_non_loopback(env: Path) -> None:
+    code, _, err = run("serve", "--host", "0.0.0.0")
+    assert code == 2
+    assert "refusing to serve plain HTTP" in err
+
+
+def test_serve_rejects_half_tls_config(env: Path, tmp_path: Path) -> None:
+    code, _, err = run("serve", "--tls-certfile", str(tmp_path / "cert.pem"))
+    assert code == 2
+    assert "both a certificate and a key" in err

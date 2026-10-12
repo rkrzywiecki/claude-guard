@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     judge_model: str = DEFAULT_JUDGE_MODEL
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
+    # TLS for the client -> proxy leg; both files or neither. Required on non-loopback binds
+    # unless allow_insecure_bind is set (TLS terminated by a reverse proxy in front).
+    tls_certfile: Path | None = None
+    tls_keyfile: Path | None = None
+    allow_insecure_bind: bool = False
     upstream_url: str = "https://api.anthropic.com"
     upstream_timeout: float = Field(default=600.0, gt=0)
     stream_mode: Literal["buffer", "audit"] = "buffer"

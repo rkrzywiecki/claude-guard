@@ -18,6 +18,16 @@ field; [policy.md](policy.md) lists every valid key.
 Another process uses port 8787. Pick another one: `uv run claude-guard serve --port 8788` (and
 use that port in `ANTHROPIC_BASE_URL`), or find the process with `lsof -iTCP:8787`.
 
+**`error: refusing to serve plain HTTP on non-loopback address '0.0.0.0'`**
+`serve` does not expose unencrypted traffic to the network. Configure TLS
+(`--tls-certfile`/`--tls-keyfile`), bind to `127.0.0.1`, or, if TLS is terminated in front of the
+proxy, set `GUARD_ALLOW_INSECURE_BIND=true`. See [proxy.md](proxy.md#tls).
+
+**`error: TLS needs both a certificate and a key`** / **`TLS file not found`** /
+**`cannot load TLS certificate ...`**
+Set both `GUARD_TLS_CERTFILE` and `GUARD_TLS_KEYFILE`, check the paths (relative to the current
+directory), and that the key belongs to the certificate and is not passphrase-protected.
+
 ## Proxy
 
 **Every request returns `502 claude-guard could not reach the upstream API`**
@@ -31,6 +41,17 @@ wrong or missing. Check `ANTHROPIC_API_KEY` in the client's environment, not the
 **`TypeError: Could not resolve authentication method` in the Python SDK**
 The SDK needs credentials before it sends anything, even to the proxy. Export
 `ANTHROPIC_API_KEY` (or log in with `ant auth login`).
+
+**Certificate errors in the client with TLS enabled**
+`self-signed certificate`, `unable to verify the first certificate` (Claude Code / Node.js) or
+`CERTIFICATE_VERIFY_FAILED` (Python) mean the client does not trust the proxy certificate. Point
+it at the CA: `NODE_EXTRA_CA_CERTS` for Claude Code, `SSL_CERT_FILE` for the Python SDK (see
+[proxy.md](proxy.md#local-certificates-mkcert)). `Hostname mismatch` / `IP address mismatch`:
+the host in `ANTHROPIC_BASE_URL` is not in the certificate's `subjectAltName`; reissue it with
+that name (e.g. `mkcert localhost 127.0.0.1 my-host`).
+
+**`Server disconnected without sending a response` / `Empty reply from server`**
+The client uses `http://` but the proxy serves HTTPS. Change `ANTHROPIC_BASE_URL` to `https://`.
 
 **A legitimate request is blocked**
 Find out which rule fired: the error message lists it, and so does the audit log

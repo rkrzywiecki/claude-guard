@@ -22,20 +22,37 @@ app = typer.Typer(
 def serve(
     host: Annotated[str | None, typer.Option(help="Listen address (default: GUARD_HOST).")] = None,
     port: Annotated[int | None, typer.Option(help="Listen port (default: GUARD_PORT).")] = None,
+    tls_certfile: Annotated[
+        Path | None, typer.Option(help="TLS certificate, PEM (default: GUARD_TLS_CERTFILE).")
+    ] = None,
+    tls_keyfile: Annotated[
+        Path | None, typer.Option(help="TLS private key, PEM (default: GUARD_TLS_KEYFILE).")
+    ] = None,
 ) -> None:
     """Run the guarding proxy (Anthropic Messages API compatible)."""
+    import structlog
     import uvicorn
 
     from claude_guard.proxy.app import create_app
+    from claude_guard.proxy.server import ServeConfigError, build_serve_config, uvicorn_config
 
     settings = get_settings()
     configure_logging(settings.log_level)
-    uvicorn.run(
-        create_app(settings),
-        host=host or settings.host,
-        port=port or settings.port,
-        log_level=settings.log_level.lower(),
-    )
+    try:
+        config = build_serve_config(
+            settings, host=host, port=port, tls_certfile=tls_certfile, tls_keyfile=tls_keyfile
+        )
+    except ServeConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    if config.insecure_bind:
+        structlog.get_logger().warning(
+            "insecure_bind",
+            host=config.host,
+            message="plain HTTP on a non-loopback address; TLS must be terminated in front",
+        )
+    uvicorn.Server(uvicorn_config(create_app(settings), config, settings.log_level)).run()
 
 
 @app.command()

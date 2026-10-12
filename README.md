@@ -124,6 +124,23 @@ Streaming works too. With `GUARD_STREAM_MODE=buffer` (default) the response is i
 the client sees it; with `audit` it is streamed live and only logged. See
 [docs/proxy.md](docs/proxy.md).
 
+### TLS
+
+On the default bind (`127.0.0.1`) the client talks to the proxy over plain HTTP on loopback. To
+encrypt that leg, or to expose the proxy to the network, give `serve` a certificate:
+
+```bash
+mkcert -install && mkcert localhost 127.0.0.1         # creates localhost+1.pem and localhost+1-key.pem
+uv run claude-guard serve --tls-certfile localhost+1.pem --tls-keyfile localhost+1-key.pem
+export ANTHROPIC_BASE_URL=https://localhost:8787
+export NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"  # Claude Code
+export SSL_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"        # Python SDK
+```
+
+`serve` refuses to listen on a non-loopback address (e.g. `--host 0.0.0.0`) without TLS. If TLS
+is terminated in front of the proxy (Caddy, nginx, a service mesh), set
+`GUARD_ALLOW_INSECURE_BIND=true`. Details in [docs/proxy.md](docs/proxy.md#tls).
+
 ## Installing the Claude Code hooks
 
 ```bash
@@ -187,6 +204,9 @@ Environment variables (or `.env`, see [.env.example](.env.example)):
 | `GUARD_JUDGE_MODEL` | `claude-haiku-4-5` | Model for the LLM judge. |
 | `GUARD_HOST` | `127.0.0.1` | Proxy listen address. |
 | `GUARD_PORT` | `8787` | Proxy listen port. |
+| `GUARD_TLS_CERTFILE` | – | TLS certificate (PEM) for the client -> proxy connection. Set together with `GUARD_TLS_KEYFILE`. |
+| `GUARD_TLS_KEYFILE` | – | TLS private key (PEM). |
+| `GUARD_ALLOW_INSECURE_BIND` | `false` | Allow plain HTTP on a non-loopback address (only when TLS is terminated in front of the proxy). |
 | `GUARD_UPSTREAM_URL` | `https://api.anthropic.com` | Where the proxy forwards requests. |
 | `GUARD_UPSTREAM_TIMEOUT` | `600` | Upstream request timeout (seconds). |
 | `GUARD_STREAM_MODE` | `buffer` | `buffer`: inspect before streaming; `audit`: stream live, inspect afterwards. |
@@ -299,6 +319,9 @@ executed.
 - **Not inspected:** images, PDFs (base64 documents), thinking blocks, operator content (system
   prompt and tool descriptions, so poisoned MCP tool descriptions are not detected), and `/v1/*`
   endpoints other than `/v1/messages` (forwarded as is).
+- **Plain HTTP on loopback by default.** Without `GUARD_TLS_CERTFILE`/`GUARD_TLS_KEYFILE` prompts
+  and API keys travel unencrypted between client and proxy. On `127.0.0.1` they never leave the
+  machine, but any local user who can sniff loopback can read them. Non-loopback binds require TLS.
 - **Hooks cannot rewrite content**: a secret in a prompt is blocked rather than redacted, and a
   tool result is flagged to Claude after the tool has already run.
 
@@ -307,6 +330,6 @@ executed.
 - [docs/tutorial.md](docs/tutorial.md): step-by-step setup and usage
 - [docs/architecture.md](docs/architecture.md): engine, payload extraction, audit log
 - [docs/policy.md](docs/policy.md): every rule and action
-- [docs/proxy.md](docs/proxy.md): endpoints, headers, streaming, metrics
+- [docs/proxy.md](docs/proxy.md): endpoints, headers, streaming, TLS, metrics
 - [docs/hooks.md](docs/hooks.md): hook events, installer, fail mode
 - [docs/troubleshooting.md](docs/troubleshooting.md): common problems
