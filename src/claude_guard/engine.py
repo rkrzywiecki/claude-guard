@@ -31,6 +31,7 @@ from claude_guard.detectors.exfiltration import ExfiltrationDetector
 from claude_guard.detectors.injection import InjectionDetector
 from claude_guard.detectors.llm_judge import LlmJudgeDetector, needs_judgement
 from claude_guard.detectors.secrets import SecretScanner, SecretsDetector
+from claude_guard.detectors.tools import ToolPolicyDetector
 from claude_guard.models import (
     Action,
     Category,
@@ -70,6 +71,7 @@ class GuardEngine:
                 CommandsDetector(policy, protected_paths(settings)),
                 ExfiltrationDetector(policy),
                 CustomRulesDetector(policy),
+                ToolPolicyDetector(policy),
             )
         )
         self._judge = judge
@@ -151,6 +153,7 @@ class GuardEngine:
             session_id=session_id,
             notes=tuple(extraction.notes),
             cwd=cwd if isinstance(cwd, str) else None,
+            tool_calls=tuple(extraction.tool_calls),
         )
 
         results = await asyncio.gather(

@@ -158,6 +158,27 @@ class DataExfiltrationPolicy(CategoryPolicy):
     allowed_hosts: list[str] = Field(default_factory=list)
 
 
+class ToolsPolicy(CategoryPolicy):
+    """Which tools may be called, by name glob (`Bash`, `mcp__github__*`).
+
+    `deny` is checked first, then `allow` (when non-empty, every other tool is denied), then
+    `warn`. Applies to tool calls about to run (hooks) and to tool_use blocks in responses.
+    """
+
+    action: Action = Action.BLOCK
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    deny: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
+    warn: list[str] = Field(default_factory=list)
+
+    @field_validator("deny", "allow", "warn")
+    @classmethod
+    def _check_globs(cls, value: list[str]) -> list[str]:
+        if any(not glob.strip() for glob in value):
+            raise ValueError("tool name globs must not be empty")
+        return value
+
+
 class LlmJudgePolicy(CategoryPolicy):
     """LLM judge settings. The model itself comes from GUARD_JUDGE_MODEL."""
 
@@ -254,6 +275,7 @@ class Policy(BaseModel):
     prompt_injection: PromptInjectionPolicy = Field(default_factory=PromptInjectionPolicy)
     dangerous_commands: DangerousCommandsPolicy = Field(default_factory=DangerousCommandsPolicy)
     data_exfiltration: DataExfiltrationPolicy = Field(default_factory=DataExfiltrationPolicy)
+    tools: ToolsPolicy = Field(default_factory=ToolsPolicy)
     llm_judge: LlmJudgePolicy = Field(default_factory=LlmJudgePolicy)
     custom_rules: list[CustomRule] = Field(default_factory=list)
 

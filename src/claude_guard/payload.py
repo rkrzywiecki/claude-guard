@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from pydantic import JsonValue
 
-from claude_guard.models import Direction, Finding, TextSegment
+from claude_guard.models import Direction, Finding, TextSegment, ToolCall
 
 JsonObject = dict[str, JsonValue]
 PathPart = str | int
@@ -97,6 +97,7 @@ def parse_path(path: str) -> list[PathPart]:
 class Extraction:
     segments: list[TextSegment] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     # Index of the first message that belongs to the current turn (after the last assistant
     # message). Segments in earlier messages are history.
     current_turn_start: int = 0
@@ -136,6 +137,7 @@ def extract(direction: Direction, payload: JsonObject) -> Extraction:
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             raise PayloadError("tool_input must be an object")
+        extraction.tool_calls.append(ToolCall(name=tool_name, location="tool_name"))
         _extract_tool_input(tool_input, ["tool_input"], tool_name, extraction)
     else:
         # The tool name is validated but not attached: tool output is data, not a tool call.
@@ -205,6 +207,8 @@ def _extract_blocks(
         elif block_type == "tool_use" or block_type == "server_tool_use":
             name = block.get("name")
             tool_input = block.get("input")
+            if isinstance(name, str):
+                extraction.tool_calls.append(ToolCall(name=name, location=format_path(path)))
             if isinstance(name, str) and isinstance(tool_input, dict):
                 _extract_tool_input(tool_input, [*path, "input"], name, extraction)
         elif block_type == "tool_result":

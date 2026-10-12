@@ -61,6 +61,7 @@ class Category(StrEnum):
     PROMPT_INJECTION = "prompt_injection"
     DANGEROUS_COMMANDS = "dangerous_commands"
     DATA_EXFILTRATION = "data_exfiltration"
+    TOOLS = "tools"
     LLM_JUDGE = "llm_judge"
 
 
@@ -103,6 +104,15 @@ class TextSegment(BaseModel):
     tool_field: str | None = None
 
 
+class ToolCall(BaseModel):
+    """A tool call in a payload, recorded even when its input has no text to inspect."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    location: str
+
+
 class InspectionContext(BaseModel):
     """Everything a detector needs to inspect one payload."""
 
@@ -116,6 +126,7 @@ class InspectionContext(BaseModel):
     notes: tuple[str, ...] = ()
     # Working directory of a tool call (from Claude Code hooks), for resolving relative paths.
     cwd: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
 
     @property
     def untrusted_segments(self) -> tuple[TextSegment, ...]:

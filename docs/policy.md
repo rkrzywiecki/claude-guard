@@ -236,6 +236,36 @@ possible (`uploads.github.com` rather than `github.com`).
 | `image_exfiltration` | high / medium | 0.80 / 0.50 | the same check for markdown images (`![](url)`) and `<img src>` in assistant text: clients fetch images without a click. Links are not flagged |
 | `foreign_api_credential` | high | 0.85 | `curl`/`wget` to `*.anthropic.com` with an `x-api-key` or `authorization` header other than `$ANTHROPIC_API_KEY` / `$ANTHROPIC_AUTH_TOKEN`: data would go to another account (not affected by `allowed_hosts`) |
 
+## `tools`
+
+Which tools may be called, by name glob (`Bash`, `WebFetch`, `mcp__github__*`; case-sensitive,
+`*` and `?` as in shell globs). Default: every list empty, so every tool is allowed;
+`action: block`.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `deny` | `[]` | Always denied, even if also listed in `allow` |
+| `allow` | `[]` | When non-empty, every tool not listed is denied. List Claude Code's built-in tools too (`Read`, `Edit`, `Write`, `Bash`, `Grep`, `Glob`, `WebFetch`, ...) |
+| `warn` | `[]` | Allowed, but each call is reported as a warning (e.g. `mcp__*` to watch MCP usage) |
+
+| Rule | Severity | Action |
+|------|----------|--------|
+| `tool_denied` | high | category `action` (default block) |
+| `tool_not_allowed` | high | category `action` (default block) |
+| `tool_watched` | low | always `warn` |
+
+Checked for tool calls about to run: `PreToolUse` in hooks (the call is denied) and `tool_use`
+blocks in proxy responses (the response is replaced by a notice). Calls without arguments are
+covered. Tool calls in a request are history and are not checked; a denied tool can still be
+offered to the model in the request's `tools` list.
+
+```yaml
+tools:
+  allow: [Read, Edit, Write, Bash, Grep, Glob, "mcp__github__*"]
+  deny: ["mcp__github__delete_*"]
+  warn: ["mcp__*"]
+```
+
 ## `llm_judge`
 
 Default: disabled, `action: block`, `threshold: 0.8`. Uses the model from `GUARD_JUDGE_MODEL`

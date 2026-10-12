@@ -122,6 +122,19 @@ def test_webfetch_exfiltration_denied(settings: Settings) -> None:
     assert "Y3VzdG9t" not in specific["permissionDecisionReason"]
 
 
+def test_denied_tool_without_arguments(tmp_path: Path) -> None:
+    policy = tmp_path / "policy.yaml"
+    policy.write_text("tools:\n  deny: ['mcp__untrusted__*']\n", encoding="utf-8")
+    settings = Settings(policy_path=policy, audit_path=tmp_path / "audit.jsonl")
+    payload = base(HookEvent.PRE_TOOL_USE, tool_name="mcp__untrusted__list", tool_input={})
+    output, _ = call(HookEvent.PRE_TOOL_USE, payload, settings)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert specific["permissionDecisionReason"] == (
+        "claude-guard: [tools] Tool mcp__untrusted__list is denied"
+    )
+
+
 def test_sensitive_file_read_denied(settings: Settings) -> None:
     payload = base(
         HookEvent.PRE_TOOL_USE, tool_name="Read", tool_input={"file_path": "/home/u/.ssh/id_rsa"}

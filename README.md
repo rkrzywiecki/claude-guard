@@ -221,9 +221,10 @@ Environment variables (or `.env`, see [.env.example](.env.example); an empty val
 | `GUARD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 
 `policy.yaml` sets, per category (`secrets`, `prompt_injection`, `dangerous_commands`,
-`data_exfiltration`, `llm_judge`), whether it is enabled, its **action** (`allow`, `warn`,
+`data_exfiltration`, `tools`, `llm_judge`), whether it is enabled, its **action** (`allow`, `warn`,
 `redact`, `block`), the confidence **threshold** for that action (below it a finding only
 warns), a minimum severity, per-direction overrides and category options such as allowlists.
+`tools` restricts which tools (built-in or MCP, by name glob) may be called;
 `custom_rules` adds your own regex rules (internal hostnames, a production cluster, ...) that use
 those category settings.
 

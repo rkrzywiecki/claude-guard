@@ -58,6 +58,21 @@ data_exfiltration:
   # allowed_hosts: [uploads.github.com, internal.example.com]
   allowed_hosts: []
 
+tools:
+  # Which tools may be called, by name glob (Bash, WebFetch, mcp__github__*). Checked for tool
+  # calls about to run (hooks) and tool_use blocks in responses (proxy).
+  enabled: true
+  action: block
+  threshold: 0.5
+  min_severity: low
+  direction_actions: {}
+  # Always denied.
+  deny: []
+  # When non-empty, only these tools are allowed (list Claude Code's built-in tools too).
+  allow: []
+  # Allowed, but every call is reported as a warning.
+  warn: []
+
 llm_judge:
   # Uses the model from GUARD_JUDGE_MODEL and ANTHROPIC_API_KEY. Adds cost and latency.
   enabled: false
