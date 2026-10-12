@@ -3,7 +3,22 @@ name = "claude-guard"
 version = "0.1.0"
 description = "Security guard for Claude: inspects outgoing context and responses via an API proxy or Claude Code hooks"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Radoslaw Krzywiecki" }]
 requires-python = ">=3.12"
+keywords = ["claude", "llm", "security", "prompt-injection", "guardrails", "claude-code"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
 dependencies = [
     "anthropic>=1.11.0",
     "fastapi>=0.142.2",
@@ -16,6 +31,12 @@ dependencies = [
     "typer>=0.27.2",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rkrzywiecki/claude-guard"
+Documentation = "https://github.com/rkrzywiecki/claude-guard/tree/main/docs"
+Issues = "https://github.com/rkrzywiecki/claude-guard/issues"
+Security = "https://github.com/rkrzywiecki/claude-guard/blob/main/SECURITY.md"
 
 [project.scripts]
 claude-guard = "claude_guard.cli:app"
