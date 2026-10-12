@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     upstream_url: str = "https://api.anthropic.com"
     upstream_timeout: float = Field(default=600.0, gt=0)
     stream_mode: Literal["buffer", "audit"] = "buffer"
+    # Endpoints the proxy cannot inspect (e.g. Files API uploads): refuse or forward them.
+    passthrough: Literal["block", "allow"] = "block"
     hook_llm: bool = False
     audit_path: Path = Path("logs/audit.jsonl")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

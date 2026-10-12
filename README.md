@@ -210,6 +210,7 @@ Environment variables (or `.env`, see [.env.example](.env.example)):
 | `GUARD_UPSTREAM_URL` | `https://api.anthropic.com` | Where the proxy forwards requests. |
 | `GUARD_UPSTREAM_TIMEOUT` | `600` | Upstream request timeout (seconds). |
 | `GUARD_STREAM_MODE` | `buffer` | `buffer`: inspect before streaming; `audit`: stream live, inspect afterwards. |
+| `GUARD_PASSTHROUGH` | `block` | `/v1/*` endpoints the proxy cannot inspect (e.g. Files API uploads): `block` answers 403, `allow` forwards them as is. |
 | `GUARD_HOOK_LLM` | `false` | Use the LLM judge inside hooks. |
 | `GUARD_AUDIT_PATH` | `logs/audit.jsonl` | Audit log. |
 | `GUARD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
@@ -332,8 +333,10 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
 - **History is capped at `warn`.** Findings in messages before the last assistant turn only warn
   (secrets are still redacted), so an old tool result cannot block a session forever.
 - **Not inspected:** images, PDFs (base64 documents), thinking blocks, operator content (system
-  prompt and tool descriptions, so poisoned MCP tool descriptions are not detected), and `/v1/*`
-  endpoints other than `/v1/messages` (forwarded as is).
+  prompt and tool descriptions, so poisoned MCP tool descriptions are not detected), files
+  referenced by `file_id`, and metadata endpoints (models, batch and file listings). Other
+  uninspectable endpoints such as Files API uploads are refused unless `GUARD_PASSTHROUGH=allow`.
+  Batch results are only inspected when fetched through the proxy.
 - **Plain HTTP on loopback by default.** Without `GUARD_TLS_CERTFILE`/`GUARD_TLS_KEYFILE` prompts
   and API keys travel unencrypted between client and proxy. On `127.0.0.1` they never leave the
   machine, but any local user who can sniff loopback can read them. Non-loopback binds require TLS.

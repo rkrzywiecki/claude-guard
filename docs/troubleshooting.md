@@ -53,6 +53,11 @@ that name (e.g. `mkcert localhost 127.0.0.1 my-host`).
 **`Server disconnected without sending a response` / `Empty reply from server`**
 The client uses `http://` but the proxy serves HTTPS. Change `ANTHROPIC_BASE_URL` to `https://`.
 
+**`403 permission_error: claude-guard does not forward POST /v1/files`**
+The endpoint carries content the proxy cannot inspect (Files API uploads, unknown endpoints).
+Upload the file without the proxy, or set `GUARD_PASSTHROUGH=allow` and accept that it is not
+inspected. See [proxy.md](proxy.md#uninspected-endpoints).
+
 **A legitimate request is blocked**
 Find out which rule fired: the error message lists it, and so does the audit log
 (`uv run claude-guard report --since 1h`). Then:

@@ -35,7 +35,7 @@ flowchart LR
 | `detectors/` | `secrets`, `injection`, `commands` (heuristics) and `llm_judge` |
 | `detectors/obfuscation.py` | Shared normalization (invisible characters, homoglyphs, leetspeak, spacing) and base64/hex/percent decoding |
 | `audit.py` | Appends one redacted JSON line per inspection |
-| `proxy/` | FastAPI proxy (`/v1/messages`, `/healthz`, `/metrics`), SSE streaming modes, listen/TLS options for `serve` (`server.py`) |
+| `proxy/` | FastAPI proxy (`/v1/messages`, `count_tokens`, Message Batches, `/healthz`, `/metrics`, passthrough policy), SSE streaming modes, listen/TLS options for `serve` (`server.py`) |
 | `hooks/` | Claude Code hook event handlers |
 | `cli.py` | Typer CLI: `serve`, `scan`, `hook`, `install-hooks`, `report` |
 

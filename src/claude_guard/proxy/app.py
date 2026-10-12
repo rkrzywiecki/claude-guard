@@ -12,14 +12,25 @@ Streaming (`"stream": true`) follows `GUARD_STREAM_MODE`:
 - `audit`: pass events through live and inspect afterwards; the verdict only reaches the audit
   log, metrics and a warning log line.
 
-Other `/v1/*` endpoints (e.g. `count_tokens`) are forwarded without inspection. Credential
-headers are forwarded but never logged.
+Other endpoints:
+- `POST /v1/messages/count_tokens`: secrets are redacted (the prompt still reaches the API), but
+  nothing is blocked, since no model runs;
+- `POST /v1/messages/batches`: every `requests[].params` is inspected like a request; one
+  blocked request rejects the batch;
+- `GET /v1/messages/batches/{id}/results`: every succeeded message is inspected like a response;
+  `results_url` in batch objects is rewritten to point at the proxy, since SDKs follow it;
+- read-only and delete endpoints in `UNINSPECTED_ENDPOINTS` (models, batch and file metadata)
+  are forwarded as is; any other `/v1/*` endpoint (e.g. Files API uploads) follows
+  `GUARD_PASSTHROUGH`: `block` (default) answers 403, `allow` forwards it uninspected.
+
+Credential headers are forwarded but never logged.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,6 +39,7 @@ import httpx
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from pydantic import JsonValue
 from starlette.background import BackgroundTask
 
 from claude_guard.config import Settings, get_settings
@@ -54,6 +66,39 @@ REQUEST_ACTION_HEADER = "x-claude-guard-request-action"
 RESPONSE_ACTION_HEADER = "x-claude-guard-response-action"
 DEFAULT_PING_INTERVAL = 10.0
 
+# Endpoints that carry no prompt content to a model; forwarded without inspection.
+UNINSPECTED_ENDPOINTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("GET", re.compile(r"/v1/models(?:/[^/]+)?")),
+    ("DELETE", re.compile(r"/v1/messages/batches/[^/]+")),
+    ("GET", re.compile(r"/v1/files(?:/[^/]+(?:/content)?)?")),
+    ("DELETE", re.compile(r"/v1/files/[^/]+")),
+)
+
+
+def is_uninspected_endpoint(method: str, path: str) -> bool:
+    return any(method == m and pattern.fullmatch(path) for m, pattern in UNINSPECTED_ENDPOINTS)
+
+
+def rewrite_results_urls(data: JsonValue, base_url: str) -> JsonValue:
+    """Point `results_url` of batch objects (single or listed) at the proxy."""
+    if isinstance(data, dict):
+        url = data.get("results_url")
+        if isinstance(url, str):
+            data["results_url"] = base_url + httpx.URL(url).raw_path.decode()
+        items = data.get("data")
+        if isinstance(items, list):
+            for item in items:
+                rewrite_results_urls(item, base_url)
+    return data
+
+
+def parse_object(raw: bytes) -> JsonObject | None:
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
 
 class Metrics:
     """In-process counters exposed in Prometheus text format."""
@@ -79,7 +124,12 @@ class Metrics:
                     f'claude_guard_verdicts_total{{direction="{direction.value}",'
                     f'action="{action.value}"}} {count}'
                 )
-        for name in ("requests_total", "upstream_errors_total", "guard_errors_total"):
+        for name in (
+            "requests_total",
+            "upstream_errors_total",
+            "guard_errors_total",
+            "passthrough_blocked_total",
+        ):
             lines.append(f"# TYPE claude_guard_{name} counter")
             lines.append(f"claude_guard_{name} {self.counters[name]}")
         return "\n".join(lines) + "\n"
@@ -162,14 +212,9 @@ def create_app(
     async def messages(request: Request) -> Response:
         metrics.counters["requests_total"] += 1
         raw = await request.body()
-        try:
-            body = json.loads(raw)
-        except ValueError:
-            body = None
-        if not isinstance(body, dict):
-            return error_response(
-                400, "invalid_request_error", "Request body must be a JSON object"
-            )
+        body = parse_object(raw)
+        if body is None:
+            return invalid_body()
 
         verdict = await guard.inspect(Direction.REQUEST, body, source="proxy")
         metrics.record(verdict)
@@ -339,14 +384,156 @@ def create_app(
             headers=client_headers(upstream_response, guard_headers),
         )
 
+    def invalid_body() -> Response:
+        return error_response(400, "invalid_request_error", "Request body must be a JSON object")
+
+    def upstream_url(request: Request) -> httpx.URL:
+        return httpx.URL(path=request.url.path, query=request.url.query.encode())
+
+    async def forward(request: Request, content: bytes | None = None) -> httpx.Response:
+        return await client.request(
+            request.method,
+            upstream_url(request),
+            content=await request.body() if content is None else content,
+            headers=upstream_headers(request),
+        )
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request) -> Response:
+        metrics.counters["requests_total"] += 1
+        raw = await request.body()
+        body = parse_object(raw)
+        if body is None:
+            return invalid_body()
+        # Only secrets are acted on: the prompt reaches the API, but no model runs.
+        verdict = await guard.inspect(Direction.REQUEST, body, source="proxy:count_tokens")
+        if any(finding.action is Action.REDACT for finding in verdict.findings):
+            raw = json.dumps(guard.redact(body, verdict), ensure_ascii=False).encode()
+        try:
+            upstream_response = await forward(request, raw)
+        except httpx.HTTPError as exc:
+            return upstream_failure(exc)
+        return passthrough_response(upstream_response, {})
+
+    @app.post("/v1/messages/batches")
+    async def create_batch(request: Request) -> Response:
+        metrics.counters["requests_total"] += 1
+        body = parse_object(await request.body())
+        if body is None:
+            return invalid_body()
+        items = body.get("requests")
+        if not isinstance(items, list):
+            return error_response(
+                400, "invalid_request_error", "Batch body must contain a requests list"
+            )
+
+        verdicts: list[Verdict] = []
+        for index, item in enumerate(items):
+            params = item.get("params") if isinstance(item, dict) else None
+            if not isinstance(item, dict) or not isinstance(params, dict):
+                return error_response(
+                    400, "invalid_request_error", f"requests[{index}].params must be an object"
+                )
+            verdict = await guard.inspect(Direction.REQUEST, params, source="proxy:batch")
+            metrics.record(verdict)
+            verdicts.append(verdict)
+            if verdict.blocked:
+                log.warning(
+                    "batch_request_blocked", index=index, rules=[f.rule for f in verdict.findings]
+                )
+                return error_response(
+                    400,
+                    "invalid_request_error",
+                    f"claude-guard blocked the batch: request {item.get('custom_id')!r}: "
+                    f"{guard.safe_reason(verdict)}",
+                    {REQUEST_ACTION_HEADER: Action.BLOCK.value},
+                )
+            if verdict.action is Action.REDACT:
+                item["params"] = guard.redact(params, verdict)
+
+        action = Action.strictest(v.action for v in verdicts)
+        raw = json.dumps(body, ensure_ascii=False).encode()
+        try:
+            upstream_response = await forward(request, raw)
+        except httpx.HTTPError as exc:
+            return upstream_failure(exc)
+        return batch_object_response(request, upstream_response, action)
+
+    @app.get("/v1/messages/batches")
+    @app.get("/v1/messages/batches/{batch_id}")
+    @app.post("/v1/messages/batches/{batch_id}/cancel")
+    async def batch_objects(request: Request) -> Response:
+        metrics.counters["requests_total"] += 1
+        try:
+            upstream_response = await forward(request)
+        except httpx.HTTPError as exc:
+            return upstream_failure(exc)
+        return batch_object_response(request, upstream_response, None)
+
+    def batch_object_response(
+        request: Request, upstream_response: httpx.Response, action: Action | None
+    ) -> Response:
+        guard_headers = {REQUEST_ACTION_HEADER: action.value} if action else {}
+        data = parse_object(upstream_response.content)
+        if upstream_response.status_code != 200 or data is None:
+            return passthrough_response(upstream_response, guard_headers)
+        rewrite_results_urls(data, str(request.base_url).rstrip("/"))
+        return JSONResponse(data, headers=client_headers(upstream_response, guard_headers))
+
+    @app.get("/v1/messages/batches/{batch_id}/results")
+    async def batch_results(request: Request) -> Response:
+        metrics.counters["requests_total"] += 1
+        try:
+            upstream_response = await forward(request)
+        except httpx.HTTPError as exc:
+            return upstream_failure(exc)
+        if upstream_response.status_code != 200:
+            return passthrough_response(upstream_response, {})
+
+        lines: list[bytes] = []
+        actions: list[Action] = []
+        for line in upstream_response.content.split(b"\n"):
+            entry = parse_object(line) if line.strip() else None
+            result = entry.get("result") if entry else None
+            message = result.get("message") if isinstance(result, dict) else None
+            if entry is None or not isinstance(result, dict) or not isinstance(message, dict):
+                lines.append(line)
+                continue
+            verdict = await guard.inspect(Direction.RESPONSE, message, source="proxy:batch")
+            metrics.record(verdict)
+            actions.append(verdict.action)
+            if verdict.blocked:
+                log.warning("batch_result_blocked", rules=[f.rule for f in verdict.findings])
+                result["message"] = blocked_message(message, guard.safe_reason(verdict))
+            elif verdict.action is Action.REDACT:
+                result["message"] = guard.redact(message, verdict)
+            else:
+                lines.append(line)
+                continue
+            lines.append(json.dumps(entry, ensure_ascii=False).encode())
+
+        headers = client_headers(
+            upstream_response, {RESPONSE_ACTION_HEADER: Action.strictest(actions).value}
+        )
+        return Response(b"\n".join(lines), headers=headers)
+
     @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def passthrough(path: str, request: Request) -> Response:
         metrics.counters["requests_total"] += 1
-        url = httpx.URL(path=f"/v1/{path}", query=request.url.query.encode())
-        try:
-            upstream_response = await client.request(
-                request.method, url, content=await request.body(), headers=upstream_headers(request)
+        endpoint = f"/v1/{path}"
+        if settings.passthrough == "block" and not is_uninspected_endpoint(
+            request.method, endpoint
+        ):
+            metrics.counters["passthrough_blocked_total"] += 1
+            log.warning("passthrough_blocked", method=request.method, path=endpoint)
+            return error_response(
+                403,
+                "permission_error",
+                f"claude-guard does not forward {request.method} {endpoint}: the endpoint is not "
+                "inspected (set GUARD_PASSTHROUGH=allow to forward it)",
             )
+        try:
+            upstream_response = await forward(request)
         except httpx.HTTPError as exc:
             return upstream_failure(exc)
         return passthrough_response(upstream_response, {})

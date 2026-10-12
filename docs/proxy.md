@@ -18,7 +18,12 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | `POST /v1/messages` | Inspected request and response (query string such as `?beta=true` is kept) |
 | `GET /healthz` | `{"status": "ok", "stream_mode": ..., "fail_mode": ...}` |
 | `GET /metrics` | Prometheus text format counters (below) |
-| any other `/v1/*` | Forwarded to the upstream **without inspection** (e.g. `/v1/messages/count_tokens`, `/v1/models`) |
+| `POST /v1/messages/count_tokens` | Secrets redacted; never blocked (no model runs) |
+| `POST /v1/messages/batches` | Every `requests[].params` inspected as a request (see [Message Batches](#message-batches)) |
+| `GET /v1/messages/batches/{id}/results` | Every succeeded message inspected as a response |
+| `GET /v1/messages/batches[/{id}]`, `POST .../{id}/cancel` | Forwarded; `results_url` rewritten to the proxy |
+| `GET /v1/models[/{id}]`, `GET /v1/files[/{id}[/content]]`, `DELETE /v1/files/{id}`, `DELETE /v1/messages/batches/{id}` | Forwarded **without inspection** (no prompt content) |
+| any other `/v1/*` | `GUARD_PASSTHROUGH=block` (default): HTTP 403 `permission_error`; `allow`: forwarded without inspection |
 
 ## Headers
 
@@ -93,6 +98,47 @@ stream ends; the verdict goes to the audit log (`source: "proxy:audit"`), metric
 `audit_mode_violation` warning log line. Nothing can be blocked or redacted in this mode.
 If the client disconnects before the end, the response is not inspected.
 
+## Message Batches
+
+`POST /v1/messages/batches` inspects each request's `params` exactly like `POST /v1/messages`:
+
+- one blocked request rejects the whole batch with HTTP 400 naming its `custom_id`, and nothing
+  is sent upstream;
+- secrets are redacted per request; `x-claude-guard-request-action` carries the strictest
+  verdict.
+
+Results (`GET /v1/messages/batches/{id}/results`, JSON Lines) are inspected line by line: a
+blocked message is replaced by the same notice as a blocked response, a redacted one is
+rewritten, everything else (errored, canceled, expired results, clean messages) is returned
+byte for byte. `x-claude-guard-response-action` carries the strictest verdict.
+
+SDKs download results from the batch's `results_url`, an absolute URL to the API. The proxy
+rewrites it to its own address in every batch object it returns (create, retrieve, list,
+cancel), so results fetched through the SDK are inspected too. The rewritten URL uses the
+address the client connected to; behind a reverse proxy, run uvicorn with forwarded headers or
+the URL may have the wrong scheme or host. Results fetched from the API directly bypass the
+proxy.
+
+## Uninspected endpoints
+
+Endpoints that carry no prompt content (model list, batch and file metadata, deletes) are
+forwarded as is. Everything else under `/v1/` that the proxy cannot inspect, notably
+**Files API uploads** (`POST /v1/files`, whose content could later be referenced from a
+`document` block by `file_id`), is refused by default:
+
+```json
+{"type": "error", "error": {"type": "permission_error",
+ "message": "claude-guard does not forward POST /v1/files: the endpoint is not inspected (set GUARD_PASSTHROUGH=allow to forward it)"}}
+```
+
+`GUARD_PASSTHROUGH=allow` forwards them without inspection. Refusals are counted in
+`claude_guard_passthrough_blocked_total` and logged as `passthrough_blocked` (method and path
+only).
+
+`count_tokens` sends the whole prompt to the API, so secrets are redacted there as well
+(the count may differ by a few tokens). Injection findings are recorded in the audit log
+(`source: "proxy:count_tokens"`) but do not block: no model reads the content.
+
 ## TLS
 
 The proxy -> `api.anthropic.com` leg always uses TLS. The client -> proxy leg is plain HTTP unless
@@ -160,6 +206,7 @@ claude_guard_verdicts_total{direction="response",action="redact"} 1
 claude_guard_requests_total 42
 claude_guard_upstream_errors_total 0
 claude_guard_guard_errors_total 0
+claude_guard_passthrough_blocked_total 0
 ```
 
 `verdicts_total` has a series for every direction/action pair. `guard_errors_total` counts
