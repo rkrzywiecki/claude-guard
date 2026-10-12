@@ -330,6 +330,9 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
 
 ## Limitations
 
+What claude-guard defends against, and what it leaves out, is described in
+[docs/threat-model.md](docs/threat-model.md). Known gaps:
+
 - **Heuristics are not complete.** Regexes and keyword rules catch known patterns and common
   obfuscation (zero-width characters, homoglyphs, leetspeak, letter-spacing, base64/hex/percent
   encoding, phrases split across blocks of one message, nested `bash -c`/`eval`, ANSI-C quoting,
@@ -376,3 +379,14 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
 - [docs/proxy.md](docs/proxy.md): endpoints, headers, streaming, TLS, metrics
 - [docs/hooks.md](docs/hooks.md): hook events, installer, fail mode
 - [docs/troubleshooting.md](docs/troubleshooting.md): common problems
+- [docs/threat-model.md](docs/threat-model.md): assets, adversaries, trust boundaries, out of
+  scope
+
+## Security
+
+Please report vulnerabilities and detection bypasses privately, as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+Copyright 2026 Radoslaw Krzywiecki. Licensed under the [Apache License 2.0](LICENSE).
