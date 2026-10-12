@@ -277,6 +277,63 @@ How it works:
 - On timeout, API error, refusal or repeated invalid output the judge reports
   `judge_unavailable`: `block` when `GUARD_FAIL_MODE=closed`, `warn` when `open`.
 
+## `custom_rules`
+
+Your own regex rules, for things only you know about: internal hostnames, customer IDs, a
+production cluster, a phrase attackers use against your app. Each rule belongs to a category
+and gets that category's `enabled`, `action`, `threshold`, `min_severity` and
+`direction_actions`, like a built-in rule. Findings are named `custom:<name>`.
+
+```yaml
+custom_rules:
+  - name: internal_hostname            # lowercase letters, digits, _; unique
+    description: Internal production hostname
+    category: secrets                  # secrets | prompt_injection | dangerous_commands | data_exfiltration
+    pattern: '\bdb-prod-\d+\.corp\.example\b'
+    severity: medium                   # default high
+    confidence: 0.9                    # default 0.9; below the category threshold it only warns
+  - name: kubectl_prod
+    description: kubectl against the production context
+    category: dangerous_commands
+    pattern: '\bkubectl\b.*--context[= ]prod\b'
+    tools: [Bash, "mcp__k8s__*"]       # tool name globs: only these tool call inputs
+    fields: [command]                  # only these tool input fields
+  - name: agent_marker
+    description: Text addressed to AI agents
+    category: prompt_injection
+    pattern: 'note to (the )?ai agent'
+    ignore_case: true
+    untrusted_only: true               # only tool results and fetched content
+    directions: [request, tool_output] # default: all directions
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `name` | required | Rule id, reported as `custom:<name>` |
+| `description` | required | Message shown in verdicts, hook reasons and the audit log |
+| `category` | required | Category whose policy decides the action |
+| `pattern` | required | Python regex; must compile and must not match the empty string |
+| `severity` | `high` | `low`, `medium`, `high`, `critical` |
+| `confidence` | 0.9 | Compared with the category `threshold` |
+| `ignore_case` | `false` | Case-insensitive matching |
+| `directions` | all | `request`, `response`, `tool_input`, `tool_output` |
+| `tools` | all | Tool name globs; when set, only tool call inputs of those tools are matched |
+| `fields` | all | Tool input fields (`command`, `url`, `file_path`, ...) |
+| `untrusted_only` | `false` | Only untrusted segments (tool results, fetched documents) |
+
+Behaviour by category:
+
+- `secrets` rules report every match and redact it as `[REDACTED:<name>]`; the excerpt is
+  masked, and matches are also masked in the audit log, hook reasons and error messages. Like
+  the built-in secret rules they inspect every segment, the system prompt included.
+- Other categories report the first match per segment, skip operator content (system prompt,
+  tool definitions), and are also matched against normalized text (invisible characters
+  removed, homoglyphs and leetspeak folded), so simple obfuscation does not hide a match; the
+  span is then not exact.
+
+Patterns come from your policy file and run on every inspected text: keep them simple and avoid
+nested quantifiers that can backtrack badly (`(a+)+`).
+
 ## Example
 
 ```yaml

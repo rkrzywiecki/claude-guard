@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -368,9 +368,11 @@ class SecretHit:
 class SecretScanner:
     """Finds secret spans in text. Shared by the detector and the audit log redaction."""
 
-    def __init__(self, policy: SecretsPolicy) -> None:
+    def __init__(self, policy: SecretsPolicy, extra_rules: Sequence[SecretRule] = ()) -> None:
         self._policy = policy
         self._allowlist = [re.compile(pattern) for pattern in policy.allowlist]
+        # Custom secrets rules, used for masking logs and messages (see `custom.masking_rules`).
+        self._rules = (*SPECIFIC_RULES, *extra_rules)
 
     def scan(self, text: str) -> list[SecretHit]:
         """Secret spans in `text`, also when split by invisible characters or base64-encoded."""
@@ -392,11 +394,11 @@ class SecretScanner:
         def overlaps(start: int, end: int) -> bool:
             return any(start < c_end and c_start < end for c_start, c_end in claimed)
 
-        for rule in SPECIFIC_RULES:
+        for rule in self._rules:
             for match in rule.pattern.finditer(text):
                 start, end = match.span(rule.group)
                 value = match.group(rule.group)
-                if overlaps(start, end) or self._allowlisted(value):
+                if end == start or overlaps(start, end) or self._allowlisted(value):
                     continue
                 if rule.validator and not rule.validator(value):
                     continue

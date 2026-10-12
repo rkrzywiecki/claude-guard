@@ -224,6 +224,8 @@ Environment variables (or `.env`, see [.env.example](.env.example); an empty val
 `data_exfiltration`, `llm_judge`), whether it is enabled, its **action** (`allow`, `warn`,
 `redact`, `block`), the confidence **threshold** for that action (below it a finding only
 warns), a minimum severity, per-direction overrides and category options such as allowlists.
+`custom_rules` adds your own regex rules (internal hostnames, a production cluster, ...) that use
+those category settings.
 
 ```yaml
 secrets:

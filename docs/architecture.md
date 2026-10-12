@@ -32,7 +32,7 @@ flowchart LR
 | `config.py` | `Settings` (env `GUARD_*`, `.env`), `Policy` models, `load_policy()` |
 | `payload.py` | Extracts text segments from payloads and writes redactions back by location |
 | `engine.py` | `GuardEngine`: runs detectors, judge, history cap, fail mode, audit |
-| `detectors/` | `secrets`, `injection`, `commands`, `exfiltration` (heuristics) and `llm_judge` |
+| `detectors/` | `secrets`, `injection`, `commands`, `exfiltration` (heuristics), `custom` (`custom_rules` from the policy) and `llm_judge` |
 | `detectors/obfuscation.py` | Shared normalization (invisible characters, homoglyphs, leetspeak, spacing) and base64/hex/percent decoding |
 | `audit.py` | Appends one redacted JSON line per inspection |
 | `proxy/` | FastAPI proxy (`/v1/messages`, `count_tokens`, Message Batches, `/healthz`, `/metrics`, passthrough policy), SSE streaming modes, listen/TLS options for `serve` (`server.py`) |

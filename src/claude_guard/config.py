@@ -179,6 +179,71 @@ class LlmJudgePolicy(CategoryPolicy):
         return value
 
 
+_RULE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+CUSTOM_RULE_CATEGORIES = (
+    Category.SECRETS,
+    Category.PROMPT_INJECTION,
+    Category.DANGEROUS_COMMANDS,
+    Category.DATA_EXFILTRATION,
+)
+
+
+class CustomRule(BaseModel):
+    """A user-defined regex rule. Its action and threshold come from its category's policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    description: str
+    category: Category
+    pattern: str
+    severity: Severity = Severity.HIGH
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    ignore_case: bool = False
+    directions: list[Direction] = Field(
+        default_factory=list, description="Directions to inspect; empty means all."
+    )
+    tools: list[str] = Field(
+        default_factory=list,
+        description="Tool name globs (e.g. Bash, mcp__*); only those tool call inputs are matched.",
+    )
+    fields: list[str] = Field(
+        default_factory=list,
+        description="Tool input fields (e.g. command, url); only those are matched.",
+    )
+    untrusted_only: bool = Field(
+        default=False, description="Only match untrusted content (tool results, fetched data)."
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not _RULE_NAME.fullmatch(value):
+            raise ValueError("name must be lowercase letters, digits and _ (start with a letter)")
+        return value
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, value: Category) -> Category:
+        if value not in CUSTOM_RULE_CATEGORIES:
+            allowed = ", ".join(c.value for c in CUSTOM_RULE_CATEGORIES)
+            raise ValueError(f"category must be one of: {allowed}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_pattern(self) -> CustomRule:
+        try:
+            compiled = re.compile(self.pattern, re.IGNORECASE if self.ignore_case else 0)
+        except re.error as exc:
+            raise ValueError(f"invalid regex {self.pattern!r}: {exc}") from exc
+        if compiled.fullmatch(""):
+            raise ValueError(f"pattern {self.pattern!r} matches the empty string")
+        return self
+
+    def compiled(self) -> re.Pattern[str]:
+        return re.compile(self.pattern, re.IGNORECASE if self.ignore_case else 0)
+
+
 class Policy(BaseModel):
     """Root of policy.yaml. Defaults mirror the shipped policy.yaml."""
 
@@ -190,6 +255,15 @@ class Policy(BaseModel):
     dangerous_commands: DangerousCommandsPolicy = Field(default_factory=DangerousCommandsPolicy)
     data_exfiltration: DataExfiltrationPolicy = Field(default_factory=DataExfiltrationPolicy)
     llm_judge: LlmJudgePolicy = Field(default_factory=LlmJudgePolicy)
+    custom_rules: list[CustomRule] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_custom_rule_names(self) -> Policy:
+        names = [rule.name for rule in self.custom_rules]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate custom rule names: {', '.join(duplicates)}")
+        return self
 
     @model_validator(mode="after")
     def _check_redact_usage(self) -> Policy:

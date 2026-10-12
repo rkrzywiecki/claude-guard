@@ -75,3 +75,21 @@ llm_judge:
   max_retries: 2
   # Longer content is truncated before being sent to the judge.
   max_input_chars: 50000
+
+# Your own regex rules. Each uses the action, threshold and direction_actions of its category
+# (secrets | prompt_injection | dangerous_commands | data_exfiltration); secrets rules redact
+# the match. Optional filters: directions, tools (globs), fields, untrusted_only, ignore_case.
+# Example:
+# custom_rules:
+#   - name: internal_hostname
+#     description: Internal production hostname
+#     category: secrets
+#     pattern: '\bdb-prod-\d+\.corp\.example\b'
+#     severity: medium
+#   - name: no_kubectl_prod
+#     description: kubectl against the production context
+#     category: dangerous_commands
+#     pattern: '\bkubectl\b.*--context[= ]prod'
+#     tools: [Bash]
+#     fields: [command]
+custom_rules: []

@@ -26,6 +26,7 @@ from claude_guard.audit import AuditLog
 from claude_guard.config import Policy, Settings, get_settings, load_policy, protected_paths
 from claude_guard.detectors.base import Detector
 from claude_guard.detectors.commands import CommandsDetector
+from claude_guard.detectors.custom import CustomRulesDetector, masking_rules
 from claude_guard.detectors.exfiltration import ExfiltrationDetector
 from claude_guard.detectors.injection import InjectionDetector
 from claude_guard.detectors.llm_judge import LlmJudgeDetector, needs_judgement
@@ -68,11 +69,12 @@ class GuardEngine:
                 InjectionDetector(policy),
                 CommandsDetector(policy, protected_paths(settings)),
                 ExfiltrationDetector(policy),
+                CustomRulesDetector(policy),
             )
         )
         self._judge = judge
         self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
-        self._scanner = SecretScanner(policy.secrets)
+        self._scanner = SecretScanner(policy.secrets, masking_rules(policy))
         self._audit = audit or AuditLog(
             settings.audit_path,
             self._scanner,
@@ -90,6 +92,11 @@ class GuardEngine:
     @property
     def policy(self) -> Policy:
         return self._policy
+
+    @property
+    def scanner(self) -> SecretScanner:
+        """Masks built-in and custom secrets in outward-facing text."""
+        return self._scanner
 
     async def inspect(
         self,

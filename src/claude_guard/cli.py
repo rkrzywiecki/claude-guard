@@ -92,7 +92,6 @@ def scan(
 
     from claude_guard.audit import AuditLog
     from claude_guard.config import PolicyError
-    from claude_guard.detectors.secrets import SecretScanner
     from claude_guard.engine import GuardEngine
     from claude_guard.payload import PayloadError, detect_direction
 
@@ -110,9 +109,7 @@ def scan(
         raise typer.Exit(2) from exc
 
     verdict = asyncio.run(engine.inspect(resolved, payload, source="cli:scan"))
-    record = AuditLog(settings.audit_path, SecretScanner(engine.policy.secrets)).build_record(
-        verdict
-    )
+    record = AuditLog(settings.audit_path, engine.scanner).build_record(verdict)
     redacted_payload = engine.redact(payload, verdict) if redacted else None
 
     if as_json:
