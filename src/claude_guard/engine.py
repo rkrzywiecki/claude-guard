@@ -25,6 +25,7 @@ from claude_guard.audit import AuditLog
 from claude_guard.config import Policy, Settings, get_settings, load_policy, protected_paths
 from claude_guard.detectors.base import Detector
 from claude_guard.detectors.commands import CommandsDetector
+from claude_guard.detectors.exfiltration import ExfiltrationDetector
 from claude_guard.detectors.injection import InjectionDetector
 from claude_guard.detectors.llm_judge import LlmJudgeDetector, needs_judgement
 from claude_guard.detectors.secrets import SecretScanner, SecretsDetector
@@ -65,6 +66,7 @@ class GuardEngine:
                 SecretsDetector(policy),
                 InjectionDetector(policy),
                 CommandsDetector(policy, protected_paths(settings)),
+                ExfiltrationDetector(policy),
             )
         )
         self._judge = judge

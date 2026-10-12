@@ -340,6 +340,10 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
 - **Plain HTTP on loopback by default.** Without `GUARD_TLS_CERTFILE`/`GUARD_TLS_KEYFILE` prompts
   and API keys travel unencrypted between client and proxy. On `127.0.0.1` they never leave the
   machine, but any local user who can sniff loopback can read them. Non-loopback binds require TLS.
+- **URL exfiltration checks look for encoded data.** A URL to an unknown host is flagged when a
+  path segment or parameter decodes from base64/hex to readable text; plain text in a short
+  query (`?q=customer+list`) is not. Inline scripts are flagged only when they visibly both read
+  local data and use the network.
 - **Tamper protection follows file paths, not code.** Writes through the shell (`>`, `tee`,
   `sed -i`, `cp`, `mv`, `rm`, ...) and file tools are recognized; a script that opens the policy
   file itself (`python -c "open('policy.yaml', 'w')"`) is not. In the proxy the working

@@ -41,6 +41,11 @@ def mask_secret(value: str) -> str:
     return f"{prefix}***{suffix}"
 
 
+def host_matches(host: str, allowed: str) -> bool:
+    """`host` is `allowed` or one of its subdomains."""
+    return host == allowed or host.endswith(f".{allowed}")
+
+
 def snippet(text: str, start: int, end: int) -> str:
     """Return the matched text with some surrounding context, on one line and length-capped."""
     left = max(0, start - SNIPPET_CONTEXT)

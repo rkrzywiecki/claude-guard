@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from claude_guard.config import Policy
-from claude_guard.detectors.base import build_finding, snippet
+from claude_guard.detectors.base import build_finding, host_matches, snippet
 from claude_guard.detectors.obfuscation import decoded_candidates
 from claude_guard.models import Category, Finding, InspectionContext, Severity, TextSegment
 
@@ -295,6 +295,29 @@ EXFIL_RULES: tuple[CommandRule, ...] = (
 )
 
 _URL = re.compile(r"https?://[^\s\"'`|;&)]+")
+# Inline scripts (`python -c`, `node -e`, `python3 - <<EOF`) that read local data and use the
+# network: the shell rules above cannot see inside them.
+_INLINE_SCRIPT = re.compile(
+    r"\b(?:python[0-9.]*|node|perl|ruby|deno|bun)\b(?:\s+-\S+)*?"
+    r"\s+(?:-[A-Za-z]*[ceE]\b|-(?=\s|$)|<<)"
+)
+_SCRIPT_NETWORK = re.compile(
+    r"\burllib\b|\brequests\.|\bhttp\.client\b|\bhttpx\b|\bsocket\b|\bsmtplib\b|\bftplib\b"
+    r"|\bfetch\s*\(|\bhttps?\.request\b|\bnet\.connect\b|\baxios\b|Net::HTTP|\bLWP\b"
+    r"|HTTP::Tiny|IO::Socket"
+)
+_SCRIPT_LOCAL_DATA = re.compile(
+    r"\bopen\s*\(|\bopen\s+[A-Z$]\w*\s*,|\bread_(?:text|bytes)\s*\(|\bos\.environ\b|\breadFile(?:Sync)?\s*\("
+    r"|\bprocess\.env\b|\bFile\.read\b|\bENV\[|%ENV\b|\bslurp\b"
+)
+SCRIPT_EXFILTRATION_RULE = CommandRule(
+    "script_exfiltration",
+    "Inline script reads local data and uses the network",
+    _INLINE_SCRIPT,
+    Category.DATA_EXFILTRATION,
+    Severity.HIGH,
+    0.75,
+)
 ANTHROPIC_API_HOST = "anthropic.com"
 # Environment variables that hold the user's own Anthropic credentials.
 OWN_ANTHROPIC_CREDENTIALS = re.compile(
@@ -404,6 +427,9 @@ class CommandsDetector:
                 match = rule.pattern.search(command)
                 if match:
                     hits.append(_hit(rule, match.start(), match.end()))
+            script = SCRIPT_EXFILTRATION_RULE.pattern.search(command)
+            if script and _SCRIPT_NETWORK.search(command) and _SCRIPT_LOCAL_DATA.search(command):
+                hits.append(_hit(SCRIPT_EXFILTRATION_RULE, script.start(), len(command)))
         hits.extend(_foreign_credential_hits(commands))
 
         if depth < MAX_NESTING:
@@ -544,7 +570,7 @@ class CommandsDetector:
         return bool(hosts) and all(self._host_allowed(host) for host in hosts)
 
     def _host_allowed(self, host: str) -> bool:
-        return any(_host_matches(host, allowed) for allowed in self._allowed_hosts)
+        return any(host_matches(host, allowed) for allowed in self._allowed_hosts)
 
 
 def _foreign_credential_hits(commands: list[SimpleCommand]) -> list[Hit]:
@@ -558,7 +584,7 @@ def _foreign_credential_hits(commands: list[SimpleCommand]) -> list[Hit]:
         if not words or words[0].rsplit("/", 1)[-1] not in _HTTP_CLIENTS:
             continue
         hosts = {(urlparse(url).hostname or "").lower() for url in _URL.findall(" ".join(words))}
-        if not any(_host_matches(host, ANTHROPIC_API_HOST) for host in hosts):
+        if not any(host_matches(host, ANTHROPIC_API_HOST) for host in hosts):
             continue
         for value in _header_values(words[1:]):
             header = _CREDENTIAL_HEADER.match(value)
@@ -589,10 +615,6 @@ def _header_values(args: list[str]) -> list[str]:
         elif arg.startswith("-H") and len(arg) > 2:
             values.append(arg[2:])
     return values
-
-
-def _host_matches(host: str, allowed: str) -> bool:
-    return host == allowed or host.endswith(f".{allowed}")
 
 
 def _guard_tamper_hit(start: int, end: int) -> Hit:
