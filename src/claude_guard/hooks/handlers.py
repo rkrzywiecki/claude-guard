@@ -106,6 +106,16 @@ async def handle(event: HookEvent, stdin: str, settings: Settings) -> HookOutput
         raise HookError(f"invalid hook input: {exc.error_count()} errors") from exc
 
     engine = GuardEngine.from_settings(settings, use_llm_judge=settings.hook_llm)
+    try:
+        return await _dispatch(event, hook_input, engine, settings)
+    finally:
+        # The process exits right after the hook answers: send pending alerts first.
+        await engine.flush_alerts()
+
+
+async def _dispatch(
+    event: HookEvent, hook_input: HookInput, engine: GuardEngine, settings: Settings
+) -> HookOutput | None:
     source = f"hook:{event.value}"
     session = hook_input.session_id
 

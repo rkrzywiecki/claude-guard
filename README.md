@@ -218,6 +218,11 @@ Environment variables (or `.env`, see [.env.example](.env.example); an empty val
 | `GUARD_AUDIT_PATH` | `logs/audit.jsonl` | Audit log. |
 | `GUARD_AUDIT_MAX_BYTES` | `10485760` (10 MiB) | Rotate the audit log at this size; `0` disables rotation. |
 | `GUARD_AUDIT_BACKUPS` | `5` | Rotated copies kept (`audit.jsonl.1` is the newest). |
+| `GUARD_ALERT_WEBHOOK_URL` | – | POST an alert here for strict verdicts (https; http only for loopback). Treated as a secret. |
+| `GUARD_ALERT_FORMAT` | `json` | `json` (masked audit record) or `slack` (`{"text": ...}`). |
+| `GUARD_ALERT_MIN_ACTION` | `block` | Lowest verdict that alerts: `warn`, `redact` or `block`. |
+| `GUARD_ALERT_TIMEOUT` | `5` | Seconds per alert; hooks wait at most this long before exiting. |
+| `GUARD_ALERT_MAX_PER_MINUTE` | `30` | Per-process cap; further alerts are dropped (`alert_rate_limited`). |
 | `GUARD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 
 `policy.yaml` sets, per category (`secrets`, `prompt_injection`, `dangerous_commands`,

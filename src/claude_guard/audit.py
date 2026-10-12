@@ -128,8 +128,9 @@ class AuditLog:
         source: str | None = None,
         session_id: str | None = None,
         duration_ms: float | None = None,
-    ) -> None:
-        """Write one record. Failures are logged, never raised: auditing must not break traffic."""
+    ) -> AuditRecord:
+        """Write one record and return it. Failures are logged, never raised: auditing must not
+        break traffic."""
         record = self.build_record(
             verdict, source=source, session_id=session_id, duration_ms=duration_ms
         )
@@ -142,6 +143,7 @@ class AuditLog:
                     handle.write(line)
         except OSError as exc:
             log.error("audit_write_failed", path=str(self._path), error=str(exc))
+        return record
 
     def _rotate_if_needed(self, incoming: int) -> None:
         if not self._max_bytes:

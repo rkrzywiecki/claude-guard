@@ -100,6 +100,12 @@ accepting that responses are then only logged, not blocked.
 With `GUARD_STREAM_MODE=audit` a streamed response violated the policy after it was delivered.
 Check the audit log entry with `source: "proxy:audit"`.
 
+**No alerts arrive**
+Check `GUARD_ALERT_WEBHOOK_URL` (https, or http on a loopback host; anything else fails
+validation at startup) and `GUARD_ALERT_MIN_ACTION` (default: only `block`). Failed deliveries
+are logged as `alert_failed` with the HTTP status or error type; `alert_rate_limited` means the
+per-process cap (`GUARD_ALERT_MAX_PER_MINUTE`) was hit. `claude-guard scan` never alerts.
+
 ## Hooks
 
 **`Modification of claude-guard files or Claude Code settings` when Claude edits settings or the

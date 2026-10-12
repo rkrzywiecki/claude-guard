@@ -275,6 +275,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        await guard.flush_alerts()
         if owns_client:
             await client.aclose()
 

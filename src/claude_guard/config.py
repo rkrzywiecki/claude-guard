@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import (
@@ -31,11 +33,22 @@ DEFAULT_SECRET_ALLOWLIST = (
 )
 
 
+def is_loopback(host: str) -> bool:
+    """True for addresses reachable only from this machine (localhost, 127.0.0.0/8, ::1)."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 class Settings(BaseSettings):
     """Runtime settings read from the environment (prefix GUARD_) and an optional .env file."""
 
     # Empty values (`GUARD_TLS_CERTFILE=` as in .env.example) mean "not set", not "".
-    # Validation errors never echo values: some settings hold secrets (API key, proxy token).
+    # Validation errors never echo values: some settings hold secrets (API key, proxy token,
+    # webhook URL).
     model_config = SettingsConfigDict(
         env_prefix="GUARD_",
         env_file=".env",
@@ -70,10 +83,34 @@ class Settings(BaseSettings):
     # Rotate the audit log at this size (0 disables rotation), keeping this many old files.
     audit_max_bytes: int = Field(default=10 * 1024 * 1024, ge=0)
     audit_backups: int = Field(default=5, ge=1, le=100)
+    # Alerts: POST to a webhook for verdicts at least as strict as alert_min_action. The URL can
+    # embed a token (Slack), so it is a secret and never logged.
+    alert_webhook_url: SecretStr | None = None
+    alert_format: Literal["json", "slack"] = "json"
+    alert_min_action: Action = Action.BLOCK
+    alert_timeout: float = Field(default=5.0, gt=0, le=60)
+    alert_max_per_minute: int = Field(default=30, ge=1)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Read without the prefix so .env can hold it; when unset the Anthropic SDK falls back to
     # its own credential resolution (environment, `ant auth login` profile).
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+
+    @field_validator("alert_webhook_url")
+    @classmethod
+    def _check_webhook_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        # Messages never echo the URL: it may carry a token.
+        try:
+            parts = urlsplit(value.get_secret_value())
+        except ValueError:
+            raise ValueError("alert_webhook_url is not a valid URL") from None
+        host = parts.hostname or ""
+        if parts.scheme == "https" and host:
+            return value
+        if parts.scheme == "http" and host and is_loopback(host):
+            return value
+        raise ValueError("alert_webhook_url must use https (http only for loopback hosts)")
 
 
 @lru_cache(maxsize=1)

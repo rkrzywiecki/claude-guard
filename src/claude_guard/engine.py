@@ -22,6 +22,7 @@ from collections.abc import Sequence
 
 import structlog
 
+from claude_guard.alerts import Alerter
 from claude_guard.audit import AuditLog
 from claude_guard.config import Policy, Settings, get_settings, load_policy, protected_paths
 from claude_guard.detectors.base import Detector
@@ -59,6 +60,7 @@ class GuardEngine:
         judge: Detector | None = None,
         use_llm_judge: bool = True,
         audit: AuditLog | None = None,
+        alerter: Alerter | None = None,
     ) -> None:
         self._policy = policy
         self._settings = settings
@@ -77,6 +79,7 @@ class GuardEngine:
         self._judge = judge
         self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
         self._scanner = SecretScanner(policy.secrets, masking_rules(policy))
+        self._alerter = alerter
         self._audit = audit or AuditLog(
             settings.audit_path,
             self._scanner,
@@ -86,10 +89,19 @@ class GuardEngine:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings | None = None, *, use_llm_judge: bool = True
+        cls,
+        settings: Settings | None = None,
+        *,
+        use_llm_judge: bool = True,
+        use_alerts: bool = True,
     ) -> GuardEngine:
         settings = settings or get_settings()
-        return cls(load_policy(settings.policy_path), settings, use_llm_judge=use_llm_judge)
+        return cls(
+            load_policy(settings.policy_path),
+            settings,
+            use_llm_judge=use_llm_judge,
+            alerter=Alerter.from_settings(settings) if use_alerts else None,
+        )
 
     @property
     def policy(self) -> Policy:
@@ -119,8 +131,17 @@ class GuardEngine:
                 Verdict(direction=direction, action=Action.ALLOW), f"{type(exc).__name__}: {exc}"
             )
         duration_ms = (time.perf_counter() - started) * 1000
-        self._audit.record(verdict, source=source, session_id=session_id, duration_ms=duration_ms)
+        record = self._audit.record(
+            verdict, source=source, session_id=session_id, duration_ms=duration_ms
+        )
+        if self._alerter is not None:
+            self._alerter.notify(record)
         return verdict
+
+    async def flush_alerts(self) -> None:
+        """Wait for alerts still being sent (bounded by GUARD_ALERT_TIMEOUT)."""
+        if self._alerter is not None:
+            await self._alerter.flush()
 
     def safe_reason(self, verdict: Verdict) -> str:
         """`verdict.reason` with secrets masked, for messages shown to clients and users.

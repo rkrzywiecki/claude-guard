@@ -33,13 +33,9 @@ def serve(
     import structlog
     import uvicorn
 
+    from claude_guard.config import is_loopback
     from claude_guard.proxy.app import create_app
-    from claude_guard.proxy.server import (
-        ServeConfigError,
-        build_serve_config,
-        is_loopback,
-        uvicorn_config,
-    )
+    from claude_guard.proxy.server import ServeConfigError, build_serve_config, uvicorn_config
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -103,7 +99,7 @@ def scan(
         if not isinstance(payload, dict):
             raise ValueError("the payload must be a JSON object")
         resolved = direction or detect_direction(payload)
-        engine = GuardEngine.from_settings(settings, use_llm_judge=not no_llm)
+        engine = GuardEngine.from_settings(settings, use_llm_judge=not no_llm, use_alerts=False)
     except (OSError, ValueError, PayloadError, PolicyError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc

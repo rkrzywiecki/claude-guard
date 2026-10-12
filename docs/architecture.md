@@ -109,3 +109,28 @@ exclusive lock on `audit.jsonl.lock` (POSIX `flock`; no lock on Windows). `claud
 reads the rotated copies too. The log and its copies are protected from the agent
 (`guard_tamper`). Write failures are logged
 and never interrupt traffic. Hooks run as separate processes, so each record is a single append.
+
+## Alerts
+
+With `GUARD_ALERT_WEBHOOK_URL` set, every verdict at least as strict as
+`GUARD_ALERT_MIN_ACTION` (default `block`) is also posted to a webhook: blocked requests and
+responses, denied tool calls, engine errors in fail-closed mode, and `audit`-mode stream
+violations (which can only be reported). Alerts come from all sources except `claude-guard
+scan`.
+
+The body is built from the audit record, so it is masked the same way:
+
+```json
+{"source": "claude-guard", "hostname": "build-01",
+ "record": {"timestamp": "...", "direction": "tool_input", "action": "block",
+            "source": "hook:PreToolUse", "session_id": "...", "findings": [...]}}
+```
+
+With `GUARD_ALERT_FORMAT=slack` the body is `{"text": ...}` with one line per finding (at most
+10), for Slack or compatible incoming webhooks.
+
+Sending never delays or breaks an inspection. The proxy posts in the background and answers the
+client at once; hooks wait for pending alerts before the process exits, at most
+`GUARD_ALERT_TIMEOUT` seconds. Errors are logged as `alert_failed` with the error type or HTTP
+status, never the URL. Each process sends at most `GUARD_ALERT_MAX_PER_MINUTE` alerts; the cap is
+per process, so every hook invocation has its own.

@@ -1,6 +1,8 @@
 """Proxy tests: the upstream Anthropic API is mocked with respx."""
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, Literal
@@ -12,6 +14,7 @@ import pytest
 import respx
 from fastapi import FastAPI
 
+from claude_guard.alerts import Alerter
 from claude_guard.config import Policy, Settings
 from claude_guard.engine import GuardEngine
 from claude_guard.proxy.app import create_app
@@ -800,3 +803,54 @@ async def test_token_checked_before_body_limit(audit_path: Path) -> None:
     async with make_client(audit_path, proxy_token=PROXY_TOKEN, max_body_bytes=1024) as http:
         response = await http.post("/v1/messages", content=b"x" * 4096)
     assert response.status_code == 401
+
+
+# --- Alerts -------------------------------------------------------------------------
+
+ALERT_URL = "https://hooks.example.test/alert"
+
+
+def alerting_client(
+    audit_path: Path, stream_mode: Literal["buffer", "audit"]
+) -> tuple[httpx.AsyncClient, GuardEngine]:
+    settings = Settings(upstream_url=UPSTREAM, stream_mode=stream_mode, audit_path=audit_path)
+    guard = GuardEngine(Policy(), settings, alerter=Alerter(ALERT_URL))
+    app = create_app(settings, engine=guard, upstream=httpx.AsyncClient(base_url=UPSTREAM))
+    http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://guard")
+    return http, guard
+
+
+async def test_audit_mode_violation_sends_alert(audit_path: Path, router: respx.MockRouter) -> None:
+    alert = router.post(ALERT_URL).mock(return_value=httpx.Response(200))
+    chunks = tool_use_stream("Bash", json.dumps({"command": "rm -rf /"}))
+    router.post("/v1/messages").mock(return_value=sse_response(chunks))
+    http, guard = alerting_client(audit_path, "audit")
+    async with http:
+        response = await http.post("/v1/messages", json=chat(stream=True))
+    assert response.content == b"".join(chunks)
+    await guard.flush_alerts()
+    record = json.loads(alert.calls.last.request.content)["record"]
+    assert (record["source"], record["direction"], record["action"]) == (
+        "proxy:audit",
+        "response",
+        "block",
+    )
+
+
+async def test_blocked_request_answered_without_waiting_for_alert(
+    audit_path: Path, router: respx.MockRouter
+) -> None:
+    async def slow(_: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.5)
+        return httpx.Response(200)
+
+    alert = router.post(ALERT_URL).mock(side_effect=slow)
+    http, guard = alerting_client(audit_path, "buffer")
+    async with http:
+        started = time.monotonic()
+        response = await http.post("/v1/messages", json=load("request_injection_tool_result"))
+        elapsed = time.monotonic() - started
+    assert response.status_code == 400
+    assert elapsed < 0.4
+    await guard.flush_alerts()
+    assert alert.called

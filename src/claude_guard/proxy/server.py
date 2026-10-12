@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import ssl
 from pathlib import Path
 
@@ -10,7 +9,7 @@ import uvicorn
 from pydantic import BaseModel, ConfigDict
 from starlette.types import ASGIApp
 
-from claude_guard.config import Settings
+from claude_guard.config import Settings, is_loopback
 
 
 class ServeConfigError(Exception):
@@ -38,16 +37,6 @@ class ServeConfig(BaseModel):
         scheme = "https" if self.tls else "http"
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"{scheme}://{host}:{self.port}"
-
-
-def is_loopback(host: str) -> bool:
-    """True for addresses reachable only from this machine (localhost, 127.0.0.0/8, ::1)."""
-    if host.lower() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:
-        return False
 
 
 def build_serve_config(

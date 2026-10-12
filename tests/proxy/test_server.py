@@ -14,12 +14,11 @@ import trustme
 import uvicorn
 from starlette.applications import Starlette
 
-from claude_guard.config import Settings
+from claude_guard.config import Settings, is_loopback
 from claude_guard.proxy.app import create_app
 from claude_guard.proxy.server import (
     ServeConfigError,
     build_serve_config,
-    is_loopback,
     uvicorn_config,
 )
 
