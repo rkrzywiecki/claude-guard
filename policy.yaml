@@ -36,6 +36,8 @@ prompt_injection:
   # direction_actions:
   #   tool_output: warn
   direction_actions: {}
+  # MCP tool definitions (tool poisoning): off | warn (findings capped at warn) | block.
+  tool_definitions: warn
 
 dangerous_commands:
   enabled: true

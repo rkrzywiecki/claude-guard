@@ -41,6 +41,7 @@ NON_TEXT_KEYS = frozenset(
     }
 )
 SKIPPED_BLOCKS = frozenset({"image", "thinking", "redacted_thinking"})
+MCP_TOOL_PREFIX = "mcp__"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 
 
@@ -159,10 +160,8 @@ def _extract_request(payload: JsonObject, extraction: Extraction) -> None:
     tools = payload.get("tools")
     if isinstance(tools, list):
         for index, tool in enumerate(tools):
-            description = tool.get("description") if isinstance(tool, dict) else None
-            if isinstance(description, str):
-                path: list[PathPart] = ["tools", index, "description"]
-                _add(extraction, path, description, "tool_definition", True)
+            if isinstance(tool, dict):
+                _extract_tool_definition(tool, ["tools", index], extraction)
 
     messages = payload.get("messages")
     if not isinstance(messages, list):
@@ -183,6 +182,35 @@ def _extract_request(payload: JsonObject, extraction: Extraction) -> None:
             _add(extraction, ["messages", index, "content"], content, role, True)
         else:
             _extract_blocks(content, ["messages", index, "content"], role, True, extraction)
+
+
+def _extract_tool_definition(
+    tool: JsonObject, prefix: list[PathPart], extraction: Extraction
+) -> None:
+    """Tool and parameter descriptions. MCP tools (`mcp__*`) come from third-party servers, so
+    their definitions are untrusted; built-in client tools are trusted."""
+    name = tool.get("name")
+    trusted = not (isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX))
+    description = tool.get("description")
+    if isinstance(description, str):
+        _add(extraction, [*prefix, "description"], description, "tool_definition", trusted)
+    for path, text in _schema_descriptions(tool.get("input_schema"), [*prefix, "input_schema"]):
+        _add(extraction, path, text, "tool_definition", trusted)
+
+
+def _schema_descriptions(
+    schema: JsonValue, prefix: list[PathPart]
+) -> Iterator[tuple[list[PathPart], str]]:
+    """`description` strings anywhere in a JSON schema (parameters, nested objects, items)."""
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            if key == "description" and isinstance(value, str):
+                yield [*prefix, key], value
+            elif isinstance(value, dict | list):
+                yield from _schema_descriptions(value, [*prefix, key])
+    elif isinstance(schema, list):
+        for index, item in enumerate(schema):
+            yield from _schema_descriptions(item, [*prefix, index])
 
 
 def _extract_blocks(

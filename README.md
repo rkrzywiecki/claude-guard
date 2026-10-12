@@ -349,7 +349,8 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
 - **History is capped at `warn`.** Findings in messages before the last assistant turn only warn
   (secrets are still redacted), so an old tool result cannot block a session forever.
 - **Not inspected:** images, PDFs (base64 documents), thinking blocks, operator content (system
-  prompt and tool descriptions, so poisoned MCP tool descriptions are not detected), files
+  prompt and built-in tool descriptions; MCP tool definitions are inspected, but by default
+  only warn), tool definitions in hooks (Claude Code does not pass them), files
   referenced by `file_id`, and metadata endpoints (models, batch and file listings). Other
   uninspectable endpoints such as Files API uploads are refused unless `GUARD_PASSTHROUGH=allow`.
   Batch results are only inspected when fetched through the proxy.

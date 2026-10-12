@@ -53,7 +53,8 @@ flowchart LR
 - `location`: path into the payload, e.g. `messages[2].content[0].text`. Keys that are not
   plain identifiers are JSON-quoted (`tool_response["a.b"]`).
 - `role`: `system`, `tool_definition` (operator roles), `user`, `assistant` or `tool`.
-- `trusted`: `false` for tool results, documents, server tool results and hook tool output.
+- `trusted`: `false` for tool results, documents, server tool results, hook tool output and MCP
+  tool definitions (`mcp__*`, including `description`s inside their `input_schema`).
 - `tool_name` / `tool_field`: set for strings inside a tool call input, e.g. `Bash` / `command`.
 
 Content block handling:

@@ -180,6 +180,9 @@ class SecretsPolicy(CategoryPolicy):
 class PromptInjectionPolicy(CategoryPolicy):
     action: Action = Action.BLOCK
     threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    # MCP tool definitions in requests (tool poisoning): not inspected, findings capped at warn,
+    # or treated like any other finding (requests are blocked while the tool is offered).
+    tool_definitions: Literal["off", "warn", "block"] = "warn"
 
 
 class DangerousCommandsPolicy(CategoryPolicy):

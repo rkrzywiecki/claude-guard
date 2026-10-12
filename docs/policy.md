@@ -88,9 +88,10 @@ Obfuscation handling:
 
 Default: `action: block`, `threshold: 0.7`.
 
-- Operator segments (role `system` and `tool_definition`: the system prompt and tool
-  descriptions) are not inspected. Injection hidden in third-party (e.g. MCP) tool descriptions
-  is therefore not detected; see the limitations in the README.
+- The system prompt and built-in tool definitions are operator content and are not inspected.
+  MCP tool definitions (`mcp__*`: the tool description and every `description` in its
+  `input_schema`) come from third-party servers and are inspected for tool poisoning, see
+  [Tool definitions](#tool-definitions-tool-poisoning).
 - Every rule is tried on several readings of the text, so obfuscation does not hide it:
   - NFKC-normalized with zero-width, soft-hyphen and Unicode tag characters removed
     (`ig<U+200B>nore`, full-width letters);
@@ -123,10 +124,30 @@ Default: `action: block`, `threshold: 0.7`.
 | `hidden_html_comment` | medium | 0.70 | HTML comment mentioning AI/assistant/instructions/run |
 | `hidden_html_element` | medium | 0.65 | text inside an element styled `display:none`, `visibility:hidden`, `font-size:0`, `opacity:0` |
 | `markdown_comment` | medium | 0.60 | `[//]: # (...)` comment with instruction-like words |
+| `tool_hidden_action` | high | 0.85 | MCP tool definitions only: "do not tell the user", "without informing the user", "the user must not know", "do not mention that ... user" |
+| `tool_sensitive_file` | high | 0.75 | MCP tool definitions only: credential files (as `sensitive_file_access`), `mcp.json`, `claude_desktop_config.json`, `.cursor/`, `.claude/settings` |
+| `tool_instruction_tag` | high | 0.80 | MCP tool definitions only: `<IMPORTANT>`, `<instructions>`, `<system>`, `<secret>`, `<hidden>` tags |
+| `tool_shadowing` | medium | 0.50 | MCP tool definitions only: instructions about another tool ("when you call the send_email tool, always ..."); never blocks on its own |
 | `markdown_image_exfil` | high | 0.75 | `![](https://host/?q={...})` — templated query used to leak data when rendered |
 | `unicode_tag_characters` | high | 0.90 | U+E0000–U+E007F; the hidden ASCII text is decoded into the excerpt |
 | `zero_width_characters` | medium | 0.60 | 3 or more zero-width characters (a leading BOM is ignored) |
 | `bidi_control_characters` | medium | 0.65 | bidirectional overrides/isolates (Trojan Source) |
+
+### Tool definitions (tool poisoning)
+
+A malicious or compromised MCP server can hide instructions in its tool descriptions or
+parameter descriptions. They are sent to the model with every request, before any tool runs.
+The proxy inspects MCP tool definitions (`mcp__*`, untrusted) with all rules above plus the
+`tool_*` rules; built-in tools stay operator content. Hooks never see tool definitions.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `tool_definitions` | `warn` | `off`: not inspected; `warn`: findings are capped at `warn` (logged, reported in `x-claude-guard-request-action`, the request goes through); `block`: findings follow the category action, so every request is refused while the poisoned tool is offered |
+
+`warn` is the default because tool definitions are in every request: a false positive in
+`block` mode would stop the whole session until the MCP server is removed. Watch the audit log
+for `tool_*` rules (`claude-guard report`) and switch to `block` once your MCP servers pass
+cleanly.
 
 ## `dangerous_commands`
 

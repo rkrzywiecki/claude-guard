@@ -242,3 +242,35 @@ def test_redaction_ignores_findings_without_span() -> None:
 def test_redaction_unknown_location() -> None:
     with pytest.raises(PayloadError):
         apply_redactions({"system": "abc"}, [redact_finding("messages[3].content", 0, 1)])
+
+
+def test_tool_definitions_include_parameter_descriptions() -> None:
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "name": "mcp__srv__tool",
+                "description": "Top",
+                "input_schema": {
+                    "type": "object",
+                    "description": "Schema",
+                    "properties": {
+                        "a": {"type": "string", "description": "Param A"},
+                        "b": {"type": "array", "items": {"description": "Item B"}},
+                    },
+                },
+            },
+            {"name": "Bash", "description": "Built-in"},
+        ],
+    }
+    segments = {s.location: s for s in extract(Direction.REQUEST, payload).segments}
+    assert {loc: s.text for loc, s in segments.items() if loc.startswith("tools")} == {
+        "tools[0].description": "Top",
+        "tools[0].input_schema.description": "Schema",
+        "tools[0].input_schema.properties.a.description": "Param A",
+        "tools[0].input_schema.properties.b.items.description": "Item B",
+        "tools[1].description": "Built-in",
+    }
+    assert segments["tools[0].description"].trusted is False
+    assert segments["tools[1].description"].trusted is True
+    assert {s.role for loc, s in segments.items() if loc.startswith("tools")} == {"tool_definition"}

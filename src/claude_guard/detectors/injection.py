@@ -5,9 +5,12 @@ invisible characters removed, homoglyphs folded to Latin, leetspeak undone and l
 collapsed. Base64/hex/percent-encoded runs are decoded and matched too, and sibling blocks of one
 message are joined so a phrase split across blocks is still found.
 
-Segments with an operator role (system prompt, tool definitions) are not inspected. Untrusted
-segments (tool results, fetched content) get a confidence boost and are also checked for fake
-conversation markers.
+The system prompt and built-in tool definitions are operator content and are not inspected.
+MCP tool definitions (descriptions of `mcp__*` tools and their parameters, where tool poisoning
+hides) are untrusted and inspected according to `prompt_injection.tool_definitions`: `off`,
+`warn` (findings capped at warn) or `block`; they also get the `TOOL_DEFINITION_RULES`.
+Untrusted segments (tool results, fetched content, MCP tool definitions) get a confidence boost
+and are also checked for fake conversation markers.
 """
 
 from __future__ import annotations
@@ -17,9 +20,10 @@ from dataclasses import dataclass
 
 from claude_guard.config import Policy
 from claude_guard.detectors.base import build_finding, snippet
+from claude_guard.detectors.commands import SENSITIVE_PATH
 from claude_guard.detectors.obfuscation import Decoded, decoded_candidates, normalize, views
 from claude_guard.models import (
-    OPERATOR_ROLES,
+    Action,
     Category,
     Finding,
     InspectionContext,
@@ -233,6 +237,57 @@ RULES: tuple[InjectionRule, ...] = (
 )
 
 
+TOOL_DEFINITION_ROLE = "tool_definition"
+
+# Tool poisoning: instructions hidden in a tool's own description or parameter descriptions.
+TOOL_DEFINITION_RULES: tuple[InjectionRule, ...] = (
+    InjectionRule(
+        "tool_hidden_action",
+        "Tool description asks to hide actions from the user",
+        re.compile(
+            r"\b(?:do\s+not|don'?t|never)\s+(?:tell|inform|mention\s+(?:this\s+)?to|notify|alert"
+            r"|reveal\s+(?:this\s+)?to|show\s+(?:this\s+)?to)\s+(?:the\s+)?user\b"
+            r"|\bwithout\s+(?:telling|informing|notifying|alerting|asking)\s+(?:the\s+)?user\b"
+            r"|\b(?:the\s+)?user\s+(?:must|should)\s+(?:not|never)\s+(?:know|see|be\s+told|notice)\b"
+            r"|\b(?:do\s+not|don'?t|never)\s+(?:mention|say|reveal|disclose)\s+(?:that|this|it)\b"
+            r"[^.\n]{0,80}\buser\b",
+            re.IGNORECASE,
+        ),
+        Severity.HIGH,
+        0.85,
+    ),
+    InjectionRule(
+        "tool_sensitive_file",
+        "Tool description refers to credential or agent configuration files",
+        re.compile(
+            rf"{SENSITIVE_PATH.pattern}|\bmcp\.json\b|claude_desktop_config\.json"
+            r"|\.cursor/|\.claude/settings"
+        ),
+        Severity.HIGH,
+        0.75,
+    ),
+    InjectionRule(
+        "tool_instruction_tag",
+        "Instruction tag in a tool description",
+        re.compile(r"</?(?:important|instructions?|system|secret|hidden)\s*>", re.IGNORECASE),
+        Severity.HIGH,
+        0.8,
+    ),
+    InjectionRule(
+        "tool_shadowing",
+        "Tool description gives instructions about other tools",
+        re.compile(
+            r"\bwhen(?:ever)?\s+(?:you\s+)?(?:use|call|invoke|using|calling|invoking)\s+(?:the\s+|any\s+)?"
+            r"[`'\"]?[\w.-]+[`'\"]?\s+tool\b[^.\n]{0,120}?\b(?:always|must|also|first|instead)\b",
+            re.IGNORECASE,
+        ),
+        Severity.MEDIUM,
+        # Legitimate descriptions describe workflows too: never enough to block on its own.
+        0.5,
+    ),
+)
+
+
 def decode_tag_characters(text: str) -> str:
     """Unicode tag characters mirror ASCII (U+E0041 is a hidden 'A'); reveal what they say."""
     return "".join(chr(ord(char) - 0xE0000) for char in text if 0xE0020 <= ord(char) <= 0xE007E)
@@ -251,8 +306,15 @@ class InjectionDetector:
     def __init__(self, policy: Policy) -> None:
         self._policy = policy.prompt_injection
 
+    def _inspected(self, segment: TextSegment) -> bool:
+        if segment.role == TOOL_DEFINITION_ROLE:
+            # Built-in tools are operator content like the system prompt; MCP tools come from
+            # third-party servers (untrusted), which is where tool poisoning happens.
+            return self._policy.tool_definitions != "off" and not segment.trusted
+        return segment.role != "system"
+
     async def detect(self, ctx: InspectionContext) -> list[Finding]:
-        segments = [s for s in ctx.segments if s.role not in OPERATOR_ROLES]
+        segments = [s for s in ctx.segments if self._inspected(s)]
         results: list[Finding | None] = []
         found_rules: dict[str, set[str]] = {}
         for segment in segments:
@@ -264,7 +326,21 @@ class InjectionDetector:
             results.extend(self._encoded(ctx, segment))
             results.extend(self._invisible_characters(ctx, segment))
         results.extend(self._split_across_blocks(ctx, segments, found_rules))
-        return [finding for finding in results if finding]
+        tool_definitions = {s.location for s in segments if s.role == TOOL_DEFINITION_ROLE}
+        return [
+            self._cap_tool_definition(finding, tool_definitions) for finding in results if finding
+        ]
+
+    def _cap_tool_definition(self, finding: Finding, locations: set[str]) -> Finding:
+        """In `warn` mode tool definition findings only warn: every request carries the tools,
+        so blocking would stop the session until the tool is removed."""
+        if (
+            self._policy.tool_definitions == "warn"
+            and finding.location in locations
+            and finding.action.rank > Action.WARN.rank
+        ):
+            return finding.model_copy(update={"action": Action.WARN})
+        return finding
 
     def _finding(
         self,
@@ -295,7 +371,8 @@ class InjectionDetector:
     def _match_rules(self, ctx: InspectionContext, segment: TextSegment) -> list[Finding | None]:
         readings = views(segment.text)
         results: list[Finding | None] = []
-        for rule in RULES:
+        rules = RULES + TOOL_DEFINITION_RULES if segment.role == TOOL_DEFINITION_ROLE else RULES
+        for rule in rules:
             if rule.untrusted_only and segment.trusted:
                 continue
             for view in readings:
