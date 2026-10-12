@@ -3,7 +3,8 @@
 Flow of `inspect`:
 1. Extract text segments from the payload (`payload.extract`).
 2. Run the heuristic detectors concurrently.
-3. Run the LLM judge when enabled and `needs_judgement` says the heuristics were uncertain.
+3. Run the LLM judge when enabled and `needs_judgement` says so (heuristics uncertain, or
+   untrusted content in the current turn in `untrusted` mode).
 4. Downgrade findings that sit in conversation history (see below).
 5. Aggregate into a Verdict (strictest action wins), apply the fail mode on errors, audit.
 
@@ -156,10 +157,12 @@ class GuardEngine:
             else:
                 findings.extend(result)
 
-        if self._use_llm_judge and needs_judgement(self._policy, findings):
-            findings.extend(
-                await self._judge_detector().detect(self._judge_context(ctx, extraction))
-            )
+        if self._use_llm_judge:
+            judge_ctx = self._judge_context(ctx, extraction)
+            if needs_judgement(
+                self._policy, findings, untrusted_content=bool(judge_ctx.untrusted_segments)
+            ):
+                findings.extend(await self._judge_detector().detect(judge_ctx))
 
         if direction is Direction.REQUEST:
             findings = [self._cap_history(finding, extraction) for finding in findings]

@@ -233,16 +233,25 @@ Default: disabled, `action: block`, `threshold: 0.8`. Uses the model from `GUARD
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `mode` | `uncertain` | `always`, or only when the strongest heuristic confidence is inside `uncertain_range` |
-| `uncertain_range` | `[0.3, 0.7]` | Confidence window `[low, high)` that triggers the judge in `uncertain` mode |
+| `mode` | `untrusted` | `always`: every payload; `untrusted`: when the content sent to the judge includes untrusted segments (tool results, fetched documents), otherwise as `uncertain`; `uncertain`: only when the strongest heuristic confidence is inside `uncertain_range` |
+| `uncertain_range` | `[0.3, 0.7]` | Confidence window `[low, high)` that triggers the judge in `untrusted` and `uncertain` mode |
 | `timeout_seconds` | 10.0 | Upper bound for the whole judgement, retries included |
 | `max_retries` | 2 | Retries for transient API errors (done by the SDK) and for missing/invalid judge output |
-| `max_input_chars` | 50000 | Characters of content sent to the judge; longer content is cut and marked `truncated` |
+| `max_input_chars` | 50000 | Characters of content sent to the judge; see the budget rules below |
 
 How it works:
 
 - In `uncertain` mode the judge is skipped when the heuristics found nothing (confidence 0) or
-  are already confident. It never removes heuristic findings; it can only add its own.
+  are already confident, so a paraphrased injection that no rule matches is never judged.
+  `untrusted` mode (default) closes that gap for tool results and fetched content, where
+  indirect injection lives: a turn that carries them is always judged. Plain prompts and
+  responses still follow the `uncertain` logic. The judge never removes heuristic findings; it
+  can only add its own.
+- `max_input_chars` is shared so that padding cannot push an injection out of view: untrusted
+  segments get their share first, segments within a group get max-min fair shares (short ones
+  whole, long ones equal parts), and a segment longer than its share keeps its start and end
+  with a `[... N characters omitted ...]` line in the middle. Such segments are marked
+  `truncated="true"`.
 - Judged categories are the enabled ones among `secrets`, `prompt_injection`,
   `dangerous_commands` and `data_exfiltration`. Operator segments (system
   prompt, tool descriptions) are not sent; for requests only the current turn is sent.

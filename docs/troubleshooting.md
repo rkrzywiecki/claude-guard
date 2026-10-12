@@ -130,9 +130,16 @@ The judge timed out, hit an API error, refused, or returned invalid output after
 `llm_judge.timeout_seconds`; the log line `llm_judge_failed` names the error type.
 
 **The judge never runs**
-In `mode: uncertain` it only runs when the strongest heuristic confidence is inside
+In `mode: untrusted` (default) it runs when the current turn contains untrusted content (tool
+results, fetched documents) or the heuristics are unsure; a plain prompt with no findings is not
+judged. In `mode: uncertain` it only runs when the strongest heuristic confidence is inside
 `uncertain_range` (default 0.3–0.7). Use `mode: always` to judge every payload (more cost and
 latency). It is also off in hooks unless `GUARD_HOOK_LLM=true`.
+
+**The judge makes every agent turn slower or costs too much**
+In `mode: untrusted` nearly every agent request carries a tool result and is judged. Switch to
+`mode: uncertain` to judge only borderline cases, lower `max_input_chars`, or keep the judge off
+in hooks (`GUARD_HOOK_LLM=false`).
 
 ## Audit log
 

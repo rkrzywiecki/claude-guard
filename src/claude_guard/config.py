@@ -150,7 +150,7 @@ class LlmJudgePolicy(CategoryPolicy):
     enabled: bool = False
     action: Action = Action.BLOCK
     threshold: float = Field(default=0.8, ge=0.0, le=1.0)
-    mode: Literal["always", "uncertain"] = "uncertain"
+    mode: Literal["always", "untrusted", "uncertain"] = "untrusted"
     uncertain_range: tuple[float, float] = (0.3, 0.7)
     timeout_seconds: float = Field(default=10.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)

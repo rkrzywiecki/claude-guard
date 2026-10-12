@@ -15,7 +15,7 @@ flowchart LR
     S --> E
     subgraph E[GuardEngine.inspect]
         X[payload.extract<br/>text segments] --> D
-        D[Heuristic detectors<br/>secrets / injection / commands<br/>run concurrently] --> J{uncertain?}
+        D[Heuristic detectors<br/>secrets / injection / commands / exfiltration<br/>run concurrently] --> J{untrusted content<br/>or uncertain?}
         J -- yes --> L[LLM judge]
         J -- no --> A
         L --> A[History cap +<br/>aggregate Verdict]

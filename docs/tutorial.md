@@ -338,12 +338,14 @@ other tools. Each line of `logs/audit.jsonl` is a JSON object you can also proce
 ## 8. (Optional) Enable the LLM judge
 
 Heuristics miss paraphrased attacks ("pay no attention to what you were told before..."). The
-judge asks a Claude model to review content the heuristics were unsure about.
+judge asks a Claude model to review untrusted content (tool results, fetched documents) and
+anything the heuristics were unsure about.
 
 1. Put an API key in `.env`: `ANTHROPIC_API_KEY=sk-ant-...`. (The judge uses the Anthropic SDK,
    which does not use your Claude Code login.)
-2. In your policy, set `llm_judge: enabled: true`. Keep `mode: uncertain` to judge only
-   borderline cases, or use `mode: always` to judge everything (more cost and latency).
+2. In your policy, set `llm_judge: enabled: true`. The default `mode: untrusted` judges every
+   turn with a tool result; use `mode: uncertain` to judge only borderline cases (cheaper), or
+   `mode: always` to judge everything (most cost and latency).
 3. Optionally choose the model with `GUARD_JUDGE_MODEL` (default `claude-haiku-4-5`).
 4. For hooks, also set `GUARD_HOOK_LLM=true` and keep `llm_judge.timeout_seconds` below the hook
    timeout (15 s).

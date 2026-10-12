@@ -65,9 +65,11 @@ llm_judge:
   threshold: 0.8
   min_severity: low
   direction_actions: {}
-  # always: judge every payload; uncertain: only when the strongest heuristic
-  # confidence falls inside uncertain_range.
-  mode: uncertain
+  # always:    judge every payload;
+  # untrusted: judge when the content includes untrusted data (tool results, fetched documents:
+  #            where indirect injection lives), and otherwise as in uncertain mode;
+  # uncertain: only when the strongest heuristic confidence falls inside uncertain_range.
+  mode: untrusted
   uncertain_range: [0.3, 0.7]
   timeout_seconds: 10.0
   max_retries: 2

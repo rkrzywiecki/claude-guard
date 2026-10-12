@@ -323,10 +323,13 @@ The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/
   11 languages). They miss paraphrases ("pay no attention to what you were told"), other
   languages, ciphers such as ROT13, injections spread over separate messages, and dynamically
   built commands. Treat claude-guard as one layer of defense, not a guarantee; the LLM judge
-  helps with paraphrases at extra cost.
+  (`mode: untrusted`) reviews every tool result for paraphrased injections at extra cost.
 - **The LLM judge costs money and time.** Each judged payload is an extra model call (latency
-  and tokens). It is off by default, only runs for uncertain cases in `uncertain` mode, and is
-  off in hooks unless `GUARD_HOOK_LLM=true`.
+  and tokens). It is off by default. In the default `untrusted` mode it runs for every turn that
+  carries a tool result, which in agent sessions is most requests; `uncertain` mode only judges
+  borderline heuristic results. It is off in hooks unless `GUARD_HOOK_LLM=true`. Content above
+  `max_input_chars` is shortened in the middle, so a very long payload can still hide an
+  injection there from the judge (the heuristics always see the full text).
 - **Audit streaming mode cannot block.** With `GUARD_STREAM_MODE=audit` responses reach the
   client before inspection; violations are only logged. `buffer` mode adds latency instead: no
   tokens are shown until generation finishes.
