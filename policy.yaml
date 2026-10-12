@@ -52,12 +52,11 @@ data_exfiltration:
   threshold: 0.6
   min_severity: low
   direction_actions: {}
-  # Hosts that tools may send data to without being flagged.
-  allowed_hosts:
-    - api.anthropic.com
-    - github.com
-    - pypi.org
-    - files.pythonhosted.org
+  # Hosts that tools may send data to (uploads, piped data, scp/rsync) without being flagged;
+  # subdomains included. Empty by default: well-known services are exfiltration channels too
+  # (a Files API upload with someone else's key, a public gist). Example:
+  # allowed_hosts: [uploads.github.com, internal.example.com]
+  allowed_hosts: []
 
 llm_judge:
   # Uses the model from GUARD_JUDGE_MODEL and ANTHROPIC_API_KEY. Adds cost and latency.

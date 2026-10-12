@@ -63,6 +63,12 @@ Find out which rule fired: the error message lists it, and so does the audit log
   (`data_exfiltration`);
 - or disable the category.
 
+**`upload_file` blocks an upload to GitHub, PyPI or the Anthropic API**
+No host may receive uploads by default, since these services can carry data out as well. Add
+the exact host you upload to under `data_exfiltration.allowed_hosts` (e.g. `uploads.github.com`).
+`foreign_api_credential` is different: it fires when a command calls the Anthropic API with a
+key other than `$ANTHROPIC_API_KEY` and is not lifted by `allowed_hosts`.
+
 **A session keeps getting blocked after one injection attempt**
 Only the current turn (messages after the last assistant message) can block. If the injection is
 in the newest tool result, the request is blocked until that result is gone: rewind or clear the

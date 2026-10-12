@@ -255,9 +255,9 @@ EXFIL_RULES: tuple[CommandRule, ...] = (
         "upload_file",
         "File uploaded to an external host",
         re.compile(
-            r"\bcurl\b[^\n;&|]{0,500}(?:\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form)\s*"
-            r"[\"']?[\w-]*=?@|\s(?:-T|--upload-file)\s)"
-            r"|\bwget\b[^\n;&|]{0,500}--post-file"
+            r"\bcurl\b[^\n;&|]{0,500}(?:\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form)[\s=]*"
+            r"[\"']?[\w-]*=?(?:@|\$\(|`)|\s(?:-T|--upload-file)\s)"
+            r"|\bwget\b[^\n;&|]{0,500}(?:--post-file|--post-data[\s=]*[\"']?[^\s\"']*(?:\$\(|`))"
         ),
         Category.DATA_EXFILTRATION,
         Severity.HIGH,
@@ -295,6 +295,14 @@ EXFIL_RULES: tuple[CommandRule, ...] = (
 )
 
 _URL = re.compile(r"https?://[^\s\"'`|;&)]+")
+ANTHROPIC_API_HOST = "anthropic.com"
+# Environment variables that hold the user's own Anthropic credentials.
+OWN_ANTHROPIC_CREDENTIALS = re.compile(
+    r"^(?:Bearer\s+)?\$(?:\{)?(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)\b(?:\})?$",
+    re.IGNORECASE,
+)
+_CREDENTIAL_HEADER = re.compile(r"^\s*(x-api-key|authorization)\s*:\s*(.*?)\s*$", re.IGNORECASE)
+_HTTP_CLIENTS = frozenset({"curl", "wget"})
 _REMOTE_HOST = re.compile(r"(?:[\w.-]+@)?([\w-]+(?:\.[\w-]+)+):")  # matched per word
 _WRAPPERS = frozenset({"sudo", "doas", "command", "exec", "nohup", "env", "time", "xargs", "nice"})
 # Wrapper options that take a value, e.g. `sudo -u root`, `nice -n 10`.
@@ -396,6 +404,7 @@ class CommandsDetector:
                 match = rule.pattern.search(command)
                 if match:
                     hits.append(_hit(rule, match.start(), match.end()))
+        hits.extend(_foreign_credential_hits(commands))
 
         if depth < MAX_NESTING:
             # `bash -c "..."`, `eval "..."`: analyze the inner command.
@@ -535,9 +544,55 @@ class CommandsDetector:
         return bool(hosts) and all(self._host_allowed(host) for host in hosts)
 
     def _host_allowed(self, host: str) -> bool:
-        return any(
-            host == allowed or host.endswith(f".{allowed}") for allowed in self._allowed_hosts
-        )
+        return any(_host_matches(host, allowed) for allowed in self._allowed_hosts)
+
+
+def _foreign_credential_hits(commands: list[SimpleCommand]) -> list[Hit]:
+    """Anthropic API calls with a key other than the user's own (data sent to another account).
+
+    Applies even when the API host is in `allowed_hosts`: the host is trusted, the account is not.
+    """
+    hits: list[Hit] = []
+    for simple in commands:
+        words = _strip_wrappers(simple.words)
+        if not words or words[0].rsplit("/", 1)[-1] not in _HTTP_CLIENTS:
+            continue
+        hosts = {(urlparse(url).hostname or "").lower() for url in _URL.findall(" ".join(words))}
+        if not any(_host_matches(host, ANTHROPIC_API_HOST) for host in hosts):
+            continue
+        for value in _header_values(words[1:]):
+            header = _CREDENTIAL_HEADER.match(value)
+            if header and not OWN_ANTHROPIC_CREDENTIALS.match(header.group(2)):
+                hits.append(
+                    Hit(
+                        "foreign_api_credential",
+                        "Anthropic API called with a credential other than ANTHROPIC_API_KEY",
+                        Category.DATA_EXFILTRATION,
+                        Severity.HIGH,
+                        0.85,
+                        simple.start,
+                        simple.end,
+                    )
+                )
+                break
+    return hits
+
+
+def _header_values(args: list[str]) -> list[str]:
+    """Values of `-H x`, `-Hx`, `--header x` and `--header=x`."""
+    values: list[str] = []
+    for index, arg in enumerate(args):
+        if arg in ("-H", "--header") and index + 1 < len(args):
+            values.append(args[index + 1])
+        elif arg.startswith("--header="):
+            values.append(arg.removeprefix("--header="))
+        elif arg.startswith("-H") and len(arg) > 2:
+            values.append(arg[2:])
+    return values
+
+
+def _host_matches(host: str, allowed: str) -> bool:
+    return host == allowed or host.endswith(f".{allowed}")
 
 
 def _guard_tamper_hit(start: int, end: int) -> Hit:

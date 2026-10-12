@@ -29,12 +29,6 @@ DEFAULT_SECRET_ALLOWLIST = (
     r"AKIAIOSFODNN7EXAMPLE",
     r"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 )
-DEFAULT_ALLOWED_HOSTS = (
-    "api.anthropic.com",
-    "github.com",
-    "pypi.org",
-    "files.pythonhosted.org",
-)
 
 
 class Settings(BaseSettings):
@@ -143,7 +137,9 @@ class DangerousCommandsPolicy(CategoryPolicy):
 class DataExfiltrationPolicy(CategoryPolicy):
     action: Action = Action.BLOCK
     threshold: float = Field(default=0.6, ge=0.0, le=1.0)
-    allowed_hosts: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_HOSTS))
+    # Hosts that may receive data from tools. Empty by default: well-known services are
+    # exfiltration channels too (Files API with another account's key, gists).
+    allowed_hosts: list[str] = Field(default_factory=list)
 
 
 class LlmJudgePolicy(CategoryPolicy):

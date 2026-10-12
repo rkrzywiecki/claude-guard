@@ -199,17 +199,23 @@ for a specific shell command.
 
 Default: `action: block`, `threshold: 0.6`. Reported by the commands detector.
 
-Extra key: `allowed_hosts` (default `api.anthropic.com`, `github.com`, `pypi.org`,
-`files.pythonhosted.org`). Subdomains are allowed too. Upload rules are skipped only when
-**every** host in the command is allowed.
+Extra key: `allowed_hosts`, the hosts tools may send data to (default: none). Subdomains are
+allowed too. Upload rules are skipped only when **every** host in the command is allowed.
+Downloads are never flagged by these rules, so the list only matters for uploads.
+
+The list is empty on purpose: well-known services are exfiltration channels too. A Files API
+upload to `api.anthropic.com` with someone else's key, a public gist on `api.github.com` or a
+package upload all send local data out. Allow only the hosts you upload to, as narrowly as
+possible (`uploads.github.com` rather than `github.com`).
 
 | Rule | Severity | Confidence | Detection |
 |------|----------|------------|-----------|
-| `upload_file` | high | 0.85 | `curl -d @file`, `--data-binary @`, `-F x=@file`, `-T`, `wget --post-file` |
+| `upload_file` | high | 0.85 | `curl -d @file`, `--data-binary @`, `-F x=@file`, `-T`, data from command output (`-d "$(cat f)"`, `` -d `...` ``), `wget --post-file`, `wget --post-data="$(...)"` |
 | `pipe_to_network` | high | 0.85 | `cat`/`tar`/`base64`/`env`/... piped to `curl`/`nc`/`socat` |
 | `netcat_send` | high | 0.85 | `nc host port < file` |
 | `remote_copy` | medium | 0.70 | `scp`/`rsync` to `host:` |
 | `dns_exfiltration` | high | 0.70 | `dig`/`nslookup`/`host` with command substitution (not affected by `allowed_hosts`) |
+| `foreign_api_credential` | high | 0.85 | `curl`/`wget` to `*.anthropic.com` with an `x-api-key` or `authorization` header other than `$ANTHROPIC_API_KEY` / `$ANTHROPIC_AUTH_TOKEN`: data would go to another account (not affected by `allowed_hosts`) |
 
 ## `llm_judge`
 
@@ -257,7 +263,7 @@ dangerous_commands:
   allowlist:
     - '^rm -rf \./(node_modules|dist|build)$'
 data_exfiltration:
-  allowed_hosts: [api.anthropic.com, internal.example.com]
+  allowed_hosts: [uploads.github.com, internal.example.com]
 ```
 
 Omitted keys keep their defaults.

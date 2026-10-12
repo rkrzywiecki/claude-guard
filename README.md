@@ -229,7 +229,7 @@ prompt_injection:
   direction_actions:
     tool_output: warn      # only warn about injection in tool results
 data_exfiltration:
-  allowed_hosts: [api.anthropic.com, github.com]
+  allowed_hosts: [internal.example.com]   # hosts that may receive uploads (none by default)
 llm_judge:
   enabled: false           # costs tokens and latency when on
 ```
