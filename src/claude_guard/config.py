@@ -35,8 +35,13 @@ class Settings(BaseSettings):
     """Runtime settings read from the environment (prefix GUARD_) and an optional .env file."""
 
     # Empty values (`GUARD_TLS_CERTFILE=` as in .env.example) mean "not set", not "".
+    # Validation errors never echo values: some settings hold secrets (API key, proxy token).
     model_config = SettingsConfigDict(
-        env_prefix="GUARD_", env_file=".env", extra="ignore", env_ignore_empty=True
+        env_prefix="GUARD_",
+        env_file=".env",
+        extra="ignore",
+        env_ignore_empty=True,
+        hide_input_in_errors=True,
     )
 
     policy_path: Path = Path("policy.yaml")

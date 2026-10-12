@@ -81,6 +81,14 @@ def test_empty_env_value_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.port == 8787
 
 
+def test_invalid_settings_do_not_echo_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GUARD_PROXY_TOKEN", "x")
+    monkeypatch.setenv("GUARD_PORT", "secret-looking-port-value")
+    with pytest.raises(ValueError, match="port") as info:
+        Settings()
+    assert "secret-looking-port-value" not in str(info.value)
+
+
 def test_settings_reject_invalid_fail_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GUARD_FAIL_MODE", "sometimes")
     with pytest.raises(ValueError, match="fail_mode"):
