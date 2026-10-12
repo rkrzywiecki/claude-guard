@@ -345,3 +345,100 @@ async def test_inline_script_to_allowed_host() -> None:
         "requests.post('https://api.internal.corp/x', data=open('r').read())\""
     )
     assert await rules(allowing("internal.corp"), bash(command)) == []
+
+
+# --- Destructive operations ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "rule"),
+    [
+        ("git reset --hard HEAD~20", "git_discard_changes"),
+        ("git -C ../repo reset --hard origin/main", "git_discard_changes"),
+        ("git clean -fdx", "git_discard_changes"),
+        ("git clean --force -d", "git_discard_changes"),
+        ("git checkout -- .", "git_discard_changes"),
+        ("git checkout .", "git_discard_changes"),
+        ("git restore .", "git_discard_changes"),
+        ("git restore --staged --worktree .", "git_discard_changes"),
+        ("git stash clear", "git_discard_changes"),
+        ("git stash drop", "git_discard_changes"),
+        ("cd repo && sudo git reset --hard", "git_discard_changes"),
+        ("terraform destroy -auto-approve", "infra_destroy"),
+        ("terraform -chdir=infra apply -destroy", "infra_destroy"),
+        ("pulumi destroy --yes", "infra_destroy"),
+        ("kubectl delete namespace production", "infra_destroy"),
+        ("kubectl --context prod delete pods --all", "infra_destroy"),
+        ("aws s3 rm s3://backups --recursive", "infra_destroy"),
+        ("aws s3 rb s3://backups --force", "infra_destroy"),
+        ("gsutil -m rm -r gs://bucket", "infra_destroy"),
+        ("gh repo delete org/app --yes", "infra_destroy"),
+        ("docker system prune -af --volumes", "infra_destroy"),
+        ("docker volume rm pgdata", "infra_destroy"),
+        ("psql -c 'DROP DATABASE production'", "database_drop"),
+        ("mysql -e 'drop schema app'", "database_drop"),
+        ("dropdb app_prod", "database_drop"),
+        ("redis-cli FLUSHALL", "database_drop"),
+        ("mongosh --eval 'db.dropDatabase()'", "database_drop"),
+        ('sqlite3 app.db "DROP TABLE users"', "table_destroy"),
+        ("psql -c 'TRUNCATE TABLE orders'", "table_destroy"),
+        ('psql -c "DELETE FROM users;"', "table_destroy"),
+        ("mysql -e 'delete from sessions'", "table_destroy"),
+    ],
+)
+async def test_destructive_operations(detector: CommandsDetector, command: str, rule: str) -> None:
+    found = await findings(detector, bash(command))
+    [finding] = [f for f in found if f.rule == rule]
+    assert finding.category is Category.DANGEROUS_COMMANDS
+    assert finding.action is Action.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git commit -m "docs: explain git reset --hard and git clean -fdx"',
+        "git reset HEAD~1",
+        "git reset --soft HEAD~1",
+        "git clean -n",
+        "git checkout main",
+        "git checkout -- src/app.py",
+        "git checkout -b feature/x",
+        "git restore --staged .",
+        "git restore src/app.py",
+        "git stash",
+        "git stash pop",
+        "git stash list",
+        "git log --oneline | grep reset",
+        "terraform plan",
+        "terraform apply -auto-approve",
+        "kubectl delete pod web-7d4b9c-x2v1",
+        "kubectl get ns",
+        "aws s3 rm s3://bucket/tmp/file.txt",
+        "aws s3 ls s3://bucket --recursive",
+        "docker image prune -f",
+        "docker volume ls",
+        "psql -c 'SELECT * FROM users'",
+        'psql -c "DELETE FROM sessions WHERE expires_at < now()"',
+        "truncate -s 0 build.log",
+        "createdb app_test",
+        "grep -rn 'DROP TABLE' migrations/",
+        "echo 'DROP DATABASE x' > notes.sql",
+        "cat schema.sql | grep -i 'delete from users;'",
+    ],
+)
+async def test_safe_operations(detector: CommandsDetector, command: str) -> None:
+    found = await rules(detector, bash(command))
+    destructive = {"git_discard_changes", "infra_destroy", "database_drop", "table_destroy"}
+    assert destructive.isdisjoint(found)
+
+
+async def test_migration_file_with_drop_table_is_not_flagged(detector: CommandsDetector) -> None:
+    ctx = tool_ctx("Write", "content", "-- down\nDROP TABLE users;\n")
+    assert await rules(detector, ctx) == []
+
+
+async def test_destructive_command_can_be_allowlisted() -> None:
+    policy = Policy(
+        dangerous_commands=DangerousCommandsPolicy(allowlist=[r"^git reset --hard origin/"])
+    )
+    assert await rules(CommandsDetector(policy), bash("git reset --hard origin/main")) == []

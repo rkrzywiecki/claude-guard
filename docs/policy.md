@@ -68,6 +68,12 @@ Obfuscation handling:
 | `github_token` | critical | 0.98 | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_` |
 | `slack_token` | high | 0.95 | `xoxb-`, `xoxp-`, ... |
 | `stripe_live_key` | critical | 0.98 | `sk_live_`, `rk_live_` |
+| `gitlab_token` | critical | 0.95 | `glpat-`, `gldt-`, `glptt-`, `glrt-`, `glcbt-`, `gloas-`, `glft-`, `glimt-`, `glagent-`, `glsoat-` + 20+ chars |
+| `huggingface_token` | high | 0.90 | `hf_` + 30+ alphanumerics |
+| `npm_token` | critical | 0.95 | `npm_` + 36 alphanumerics |
+| `pypi_token` | critical | 0.98 | `pypi-AgEIcHlwaS5vcmc...` (PyPI macaroon) |
+| `sendgrid_api_key` | high | 0.95 | `SG.<22>.<43>` |
+| `url_credentials` | high | 0.85 | password in `scheme://user:password@host` (`postgres://`, `redis://:pw@`, `https://`, ...); only the password is redacted; placeholders (`password`, `${VAR}`, `<token>`) are ignored |
 | `google_api_key` | high | 0.95 | `AIza` + 35 chars |
 | `jwt` | high | 0.90 | three base64url parts; header must decode to JSON with `alg` |
 | `iban` | high | 0.90 | IBAN with per-country length and mod-97 checksum |
@@ -193,6 +199,10 @@ for a specific shell command.
 | `sensitive_file_access` | high | 0.75 | `~/.ssh`, `id_rsa`, `.aws/credentials`, `.kube/config`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `/etc/shadow`, `.env` (not `.env.example`/`.sample`/`.template`/`.dist`) |
 | `persistence_file_write` | critical | 0.85 | writing `authorized_keys`, shell startup files (`.bashrc`, `.bash_profile`, `.bash_login`, `.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.profile`), `/etc/*`, `.git/hooks/*`, LaunchAgents/LaunchDaemons, cron; via file tools or shell write targets |
 | `persistence_command` | high | 0.85 | `crontab <file>` / `crontab -` (not `crontab -l`), `launchctl load`/`bootstrap`/`enable`/`submit`, `systemctl [--user] enable`/`link` |
+| `git_discard_changes` | high | 0.75 | `git reset --hard`, `git clean -f`/`--force`, `git checkout .`/`-- .`, `git restore .` (not `--staged` only), `git stash clear`/`drop`; parsed from the command's words, so a commit message mentioning them does not match |
+| `infra_destroy` | critical | 0.90 | `terraform destroy`/`apply -destroy`, `pulumi`/`cdk destroy`, `kubectl delete namespace`/`all`/`--all`, `aws s3 rm --recursive`, `aws s3 rb --force`, `gsutil rm -r`, `gcloud projects delete`, `az group delete`, `gh repo delete`, `docker system`/`volume prune`, `docker volume rm` |
+| `database_drop` | critical | 0.90 | `DROP DATABASE`/`SCHEMA`, `dropdb`, `FLUSHALL`/`FLUSHDB`, `dropDatabase()`; only when the command runs a data-store client (`psql`, `mysql`, `sqlite3`, `redis-cli`, `mongosh`, ...) |
+| `table_destroy` | high | 0.75 | `DROP TABLE`, `TRUNCATE TABLE`, `DELETE FROM t` without `WHERE`; same client requirement (SQL in files and `grep` patterns is ignored) |
 | `guard_tamper` | critical | 0.95 | writing or removing the policy, the audit log, Stop offsets or Claude Code settings (see above) |
 
 ## `data_exfiltration`

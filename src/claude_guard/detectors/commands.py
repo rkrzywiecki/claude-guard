@@ -229,6 +229,46 @@ RULES: tuple[CommandRule, ...] = (
         0.75,
     ),
     CommandRule(
+        "infra_destroy",
+        "Destroys infrastructure, cloud storage or a repository",
+        re.compile(
+            r"\bterraform\b[^\n;&|]{0,200}?\s(?:destroy\b|apply\b[^\n;&|]{0,200}?\s-destroy\b)"
+            r"|\b(?:pulumi|cdk|cdktf)\s+(?:-\S+\s+)*destroy\b"
+            r"|\bkubectl\b[^\n;&|]{0,200}?\sdelete\s+(?:namespaces?|ns|all)\b"
+            r"|\bkubectl\b[^\n;&|]{0,200}?\sdelete\b[^\n;&|]{0,200}?\s(?:--all|-A)\b"
+            r"|\baws\s+s3\s+(?:rm\b[^\n;&|]{0,300}?\s--recursive|rb\b[^\n;&|]{0,300}?\s--force)\b"
+            r"|\bgsutil\s+(?:-m\s+)?rm\s+-[a-zA-Z]*r|\bgcloud\s+projects\s+delete\b"
+            r"|\baz\s+group\s+delete\b|\bgh\s+repo\s+delete\b"
+            r"|\bdocker\s+(?:system|volume)\s+prune\b|\bdocker\s+volume\s+rm\b"
+        ),
+        Category.DANGEROUS_COMMANDS,
+        Severity.CRITICAL,
+        0.9,
+    ),
+    CommandRule(
+        "database_drop",
+        "Drops a database or wipes a data store",
+        re.compile(
+            r"\bdrop\s+(?:database|schema)\b|\bdropdb\b|\bflush(?:all|db)\b|\bdropDatabase\s*\(",
+            re.IGNORECASE,
+        ),
+        Category.DANGEROUS_COMMANDS,
+        Severity.CRITICAL,
+        0.9,
+    ),
+    CommandRule(
+        "table_destroy",
+        "Drops, truncates or empties a table",
+        re.compile(
+            r"\bdrop\s+table\b|\btruncate\s+table\b"
+            r"|\bdelete\s+from\s+[\w.\"`]+\s*(?:;|[\"']|$)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        Category.DANGEROUS_COMMANDS,
+        Severity.HIGH,
+        0.75,
+    ),
+    CommandRule(
         "persistence_command",
         "Scheduled task or service installed (persistence)",
         re.compile(
@@ -295,6 +335,12 @@ EXFIL_RULES: tuple[CommandRule, ...] = (
 )
 
 _URL = re.compile(r"https?://[^\s\"'`|;&)]+")
+# SQL and data-store rules only count when a client runs them, not in `grep 'DROP TABLE'`.
+DATA_STORE_RULES = frozenset({"database_drop", "table_destroy"})
+_DATA_STORE_CLIENT = re.compile(
+    r"\b(?:psql|pgcli|mysql|mariadb|mycli|sqlite3|litecli|duckdb|sqlcmd|usql|cockroach"
+    r"|clickhouse(?:-client)?|cqlsh|snowsql|bq|redis-cli|valkey-cli|mongosh?|dropdb)\b"
+)
 # Inline scripts (`python -c`, `node -e`, `python3 - <<EOF`) that read local data and use the
 # network: the shell rules above cannot see inside them.
 _INLINE_SCRIPT = re.compile(
@@ -409,9 +455,13 @@ class CommandsDetector:
         command = _expand_obfuscation(command)
         commands = _simple_commands(command)
         hits = self._rm_hits(commands)
+        hits.extend(_git_hits(commands))
         hits.extend(self._write_hits(commands, cwd))
         seen_force_push = False
+        has_data_store_client = bool(_DATA_STORE_CLIENT.search(command))
         for rule in RULES:
+            if rule.name in DATA_STORE_RULES and not has_data_store_client:
+                continue
             match = rule.pattern.search(command)
             if not match:
                 continue
@@ -828,3 +878,49 @@ def _change_directory(args: list[str], cwd: str | None) -> str | None:
     if operands[0] == "-":
         return None
     return _resolve_path(operands[0], cwd)
+
+
+# git global options that take a value (`git -C dir status`).
+_GIT_OPTIONS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+_WHOLE_TREE = frozenset({".", ":/", "*", "./"})
+
+
+def _git_hits(commands: list[SimpleCommand]) -> list[Hit]:
+    """git commands that throw away uncommitted work (tokens, so commit messages do not match)."""
+    hits: list[Hit] = []
+    for simple in commands:
+        words = _strip_wrappers(simple.words)
+        if not words or words[0].rsplit("/", 1)[-1] != "git":
+            continue
+        index = 1
+        while index < len(words) and words[index].startswith("-"):
+            index += 2 if words[index] in _GIT_OPTIONS_WITH_VALUE else 1
+        if index >= len(words):
+            continue
+        subcommand, args = words[index], words[index + 1 :]
+        flags = [arg for arg in args if arg.startswith("-") and arg != "--"]
+        operands = [arg for arg in args if not arg.startswith("-")]
+        short = "".join(flag[1:] for flag in flags if not flag.startswith("--"))
+        if (
+            (subcommand == "reset" and "--hard" in flags)
+            or (subcommand == "clean" and ("f" in short or "--force" in flags))
+            or (subcommand == "checkout" and any(op in _WHOLE_TREE for op in operands))
+            or (
+                subcommand == "restore"
+                and any(op in _WHOLE_TREE for op in operands)
+                and ("--staged" not in flags or "--worktree" in flags)
+            )
+            or (subcommand == "stash" and operands[:1] in (["clear"], ["drop"]))
+        ):
+            hits.append(
+                Hit(
+                    "git_discard_changes",
+                    "Discards uncommitted changes or stashes",
+                    Category.DANGEROUS_COMMANDS,
+                    Severity.HIGH,
+                    0.75,
+                    simple.start,
+                    simple.end,
+                )
+            )
+    return hits

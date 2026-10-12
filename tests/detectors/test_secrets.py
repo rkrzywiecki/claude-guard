@@ -39,6 +39,11 @@ JWT = (
     ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
     ".dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 )
+GITLAB_TOKEN = fake("gl" + "pat-", 20)
+HF_TOKEN = fake("h" + "f_", 34)
+NPM_TOKEN = fake("np" + "m_", 36)
+PYPI_TOKEN = fake("py" + "pi-AgEIcHlwaS5vcmc", 60)
+SENDGRID_KEY = fake("S" + "G.", 22) + "." + fake("", 43)
 PEM = "-----BEGIN " + "RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
 
 
@@ -73,6 +78,14 @@ def detector() -> SecretsDetector:
         ("nr konta 61 1090 1014 0000 0712 1981 2874", "nrb"),
         ('db_password = "S3cure!Passw0rd"', "credential_assignment"),
         ('{"api_key": "q8Lm2Zr7Tn"}', "credential_assignment"),
+        (f"git clone https://oauth2:{GITLAB_TOKEN}@gitlab.com/g/p.git", "gitlab_token"),
+        (f"HF_TOKEN={HF_TOKEN}", "huggingface_token"),
+        (f"//registry.npmjs.org/:_authToken={NPM_TOKEN}", "npm_token"),
+        (f"password = {PYPI_TOKEN}", "pypi_token"),
+        (f"SENDGRID={SENDGRID_KEY}", "sendgrid_api_key"),
+        ("psql postgres://admin:S3cr3tPassw0rd@db.internal:5432/app", "url_credentials"),
+        ("REDIS_URL=redis://:hunter2hunter2@cache:6379/0", "url_credentials"),
+        ("amqp://guest:Rabb1tPw!@mq.local//", "url_credentials"),
     ],
 )
 async def test_detects_secret(detector: SecretsDetector, text: str, rule: str) -> None:
@@ -108,6 +121,13 @@ async def test_finding_has_span_redacted_excerpt_and_replacement(detector: Secre
     assert finding.replacement == "[REDACTED:anthropic_api_key]"
     assert finding.action is Action.REDACT
     assert finding.location == "messages[0].content[0].text"
+
+
+async def test_url_credentials_redact_only_the_password(detector: SecretsDetector) -> None:
+    text = "DATABASE_URL=postgres://app:S3cr3tPassw0rd@db:5432/app"
+    [finding] = await findings(detector, text_ctx(text))
+    assert finding.span is not None
+    assert text[finding.span.start : finding.span.end] == "S3cr3tPassw0rd"
 
 
 async def test_value_reported_once(detector: SecretsDetector) -> None:
@@ -175,6 +195,15 @@ async def test_no_findings(detector: SecretsDetector, text: str) -> None:
         "api_key: your_api_key_here",
         'password = "********"',
         "password: str",
+        "postgres://user:password@localhost:5432/db",
+        "mysql://root:${DB_PASSWORD}@localhost/app",
+        "https://user:<token>@example.com/repo.git",
+        "ssh://git@github.com/org/repo.git",
+        "git@github.com:org/repo.git",
+        "http://[::1]:8080/health",
+        "hf_hub_download(repo_id='x')",
+        "npm_config_cache=/tmp/npm",
+        "SG.example",
     ],
 )
 async def test_false_positives_ignored(detector: SecretsDetector, text: str) -> None:

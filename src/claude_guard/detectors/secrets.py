@@ -108,6 +108,14 @@ def nrb_valid(value: str) -> bool:
     return len(digits) == 26 and iban_valid(f"PL{digits}")
 
 
+_URL_PASSWORD_PLACEHOLDERS = frozenset({"password", "passwd", "pass", "pwd", "secret", "token"})
+
+
+def url_password_valid(value: str) -> bool:
+    """Reject `user:password@`, `user:$PASS@` and other placeholders in URL credentials."""
+    return value.lower() not in _URL_PASSWORD_PLACEHOLDERS and assigned_value_valid(value)
+
+
 def jwt_valid(value: str) -> bool:
     header = value.split(".", 1)[0]
     try:
@@ -199,6 +207,52 @@ SPECIFIC_RULES: tuple[SecretRule, ...] = (
         re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\b"),
         Severity.CRITICAL,
         0.98,
+    ),
+    SecretRule(
+        "gitlab_token",
+        "GitLab token",
+        re.compile(_B + r"gl(?:pat|dt|ptt|rt|cbt|oas|ft|imt|agent|soat)-[A-Za-z0-9_.-]{20,}" + _E),
+        Severity.CRITICAL,
+        0.95,
+    ),
+    SecretRule(
+        "huggingface_token",
+        "Hugging Face token",
+        re.compile(r"\bhf_[A-Za-z0-9]{30,}\b"),
+        Severity.HIGH,
+        0.9,
+    ),
+    SecretRule(
+        "npm_token",
+        "npm access token",
+        re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+        Severity.CRITICAL,
+        0.95,
+    ),
+    SecretRule(
+        "pypi_token",
+        "PyPI API token",
+        re.compile(_B + r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}" + _E),
+        Severity.CRITICAL,
+        0.98,
+    ),
+    SecretRule(
+        "sendgrid_api_key",
+        "SendGrid API key",
+        re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}" + _E),
+        Severity.HIGH,
+        0.95,
+    ),
+    SecretRule(
+        "url_credentials",
+        "Password embedded in a URL",
+        re.compile(
+            r"\b[a-zA-Z][a-zA-Z0-9+.-]{1,20}://[^\s:/@'\"]*:(?P<value>[^\s@/'\"]{3,})@[\w.\[\]-]+"
+        ),
+        Severity.HIGH,
+        0.85,
+        group="value",
+        validator=url_password_valid,
     ),
     SecretRule(
         "google_api_key",
