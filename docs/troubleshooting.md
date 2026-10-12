@@ -79,6 +79,12 @@ Check the audit log entry with `source: "proxy:audit"`.
 
 ## Hooks
 
+**`Modification of claude-guard files or Claude Code settings` when Claude edits settings or the
+policy**
+Intended: an agent could otherwise remove the hooks or relax the policy. Make the change
+yourself; for a recurring shell command add a narrow regex to `dangerous_commands.allowlist`.
+See [policy.md](policy.md#guard-tampering).
+
 **Hooks do nothing**
 - Check `.claude/settings.json` contains the claude-guard entries (`/hooks` in Claude Code
   lists them).

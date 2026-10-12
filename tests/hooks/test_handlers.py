@@ -87,6 +87,29 @@ def test_dangerous_command_denied(settings: Settings) -> None:
     assert specific["permissionDecisionReason"].startswith("claude-guard: [dangerous_commands]")
 
 
+def test_audit_log_deletion_denied_using_cwd(settings: Settings) -> None:
+    payload = base(
+        HookEvent.PRE_TOOL_USE,
+        tool_name="Bash",
+        tool_input={"command": "rm audit.jsonl"},
+        cwd=str(settings.audit_path.parent),
+    )
+    output, _ = call(HookEvent.PRE_TOOL_USE, payload, settings)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "claude-guard files or Claude Code settings" in specific["permissionDecisionReason"]
+
+
+def test_hook_settings_edit_denied(settings: Settings) -> None:
+    payload = base(
+        HookEvent.PRE_TOOL_USE,
+        tool_name="Write",
+        tool_input={"file_path": "/repo/.claude/settings.json", "content": "{}"},
+    )
+    output, _ = call(HookEvent.PRE_TOOL_USE, payload, settings)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_sensitive_file_read_denied(settings: Settings) -> None:
     payload = base(
         HookEvent.PRE_TOOL_USE, tool_name="Read", tool_input={"file_path": "/home/u/.ssh/id_rsa"}

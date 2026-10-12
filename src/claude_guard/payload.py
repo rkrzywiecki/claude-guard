@@ -3,7 +3,7 @@
 Payload shapes per direction:
 - `request`: a Messages API request body (`system`, `messages`, `tools`, ...).
 - `response`: a Messages API response (`content` blocks from the assistant).
-- `tool_input`: `{"tool_name": str, "tool_input": {...}}` (a tool call about to run).
+- `tool_input`: `{"tool_name": str, "tool_input": {...}, "cwd": str?}` (a tool call about to run).
 - `tool_output`: `{"tool_name": str, "tool_response": ...}` (a tool result, untrusted).
 
 Every segment records its `location`, a path such as `messages[2].content[0].text`, built and

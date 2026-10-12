@@ -128,7 +128,7 @@ Default: `action: block`, `threshold: 0.7`. Inspects only tool call inputs:
 
 - `command` fields (Bash): full rule set below.
 - `file_path` / `path` / `notebook_path`: sensitive file access; for `Write`, `Edit`,
-  `MultiEdit`, `NotebookEdit` also persistence targets.
+  `MultiEdit`, `NotebookEdit` also persistence targets and guard tampering.
 - `content` / `new_string`: the command rules at **0.7× confidence** (writing a script is not
   running it), so they usually only warn.
 
@@ -145,6 +145,32 @@ Shell parsing and evasion handling:
   Their findings mention "(nested shell)" or "(base64-encoded)".
 - ANSI-C quoting (`$'\x72\x6d' -rf /`) is decoded and simple variable indirection
   (`X=rm; $X -rf /`) is expanded before matching.
+- Files a command modifies are collected: redirection targets (`>`, `>>`, `>|`, `&>`), `tee`,
+  `touch`, `truncate`, `chmod`/`chown`, the destination of `cp`/`ln`/`install`, `dd of=`,
+  files edited in place (`sed -i`, `perl -pi`), and files removed or moved away (`rm`,
+  `unlink`, `shred`, `mv` sources). They are checked for `guard_tamper` and
+  `persistence_file_write`.
+
+### Guard tampering
+
+An agent that can rewrite the guard's configuration can switch it off. `guard_tamper` flags
+writes to, and removal of:
+
+- the policy file (`GUARD_POLICY_PATH`), the audit log (`GUARD_AUDIT_PATH`) and the Stop hook
+  offsets next to it (`sessions/`);
+- Claude Code settings, which hold the hooks: `.claude/settings.json`,
+  `.claude/settings.local.json` (any project and `~/.claude`) and `managed-settings.json`;
+  removing a `.claude` directory counts too.
+
+Paths are compared after expanding `~`/`$HOME` and resolving symlinks. Relative paths are
+resolved against the tool call's working directory, which Claude Code passes to hooks (`cwd`),
+following `cd` inside the command; in the proxy the working directory is unknown, so relative
+guard paths are not recognized there (Claude Code settings are, by name). Removing or moving a
+parent directory of a guard file (`rm -r logs`) is tampering as well. Reading these files is
+allowed.
+
+To change the policy or the settings, edit them yourself, or add a narrow regex to `allowlist`
+for a specific shell command.
 
 | Rule | Severity | Confidence | Detection |
 |------|----------|------------|-----------|
@@ -165,7 +191,9 @@ Shell parsing and evasion handling:
 | `rmtree_critical` | critical | 0.90 | `shutil.rmtree('/')`, `shutil.rmtree('~')`, `shutil.rmtree(os.path.expanduser(...))` |
 | `fork_bomb` | critical | 0.99 | `:(){ :\|:& };:` |
 | `sensitive_file_access` | high | 0.75 | `~/.ssh`, `id_rsa`, `.aws/credentials`, `.kube/config`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `/etc/shadow`, `.env` (not `.env.example`/`.sample`/`.template`/`.dist`) |
-| `persistence_file_write` | critical | 0.85 | writing `authorized_keys`, shell rc files, `/etc/*`, `.git/hooks/*`, LaunchAgents, cron |
+| `persistence_file_write` | critical | 0.85 | writing `authorized_keys`, shell startup files (`.bashrc`, `.bash_profile`, `.bash_login`, `.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.profile`), `/etc/*`, `.git/hooks/*`, LaunchAgents/LaunchDaemons, cron; via file tools or shell write targets |
+| `persistence_command` | high | 0.85 | `crontab <file>` / `crontab -` (not `crontab -l`), `launchctl load`/`bootstrap`/`enable`/`submit`, `systemctl [--user] enable`/`link` |
+| `guard_tamper` | critical | 0.95 | writing or removing the policy, the audit log, Stop offsets or Claude Code settings (see above) |
 
 ## `data_exfiltration`
 

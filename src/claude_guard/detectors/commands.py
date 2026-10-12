@@ -5,14 +5,23 @@ Only segments that come from a tool call input (`tool_name` set) are inspected:
 - path fields (`file_path`, `path`, `notebook_path`) are checked for sensitive files,
 - content fields (`content`, `new_string`) are checked for dangerous commands written into
   scripts, with reduced confidence since writing is not executing.
+
+Files modified by a tool call (Write/Edit paths, and shell write targets such as `>`, `tee`,
+`cp`, `mv`, `rm`, `sed -i`) are checked for persistence locations and for guard tampering: the
+policy, the audit log and Claude Code settings (which hold the hooks). Relative paths are
+resolved against the tool call's `cwd` (known in hooks), following `cd` within the command.
 """
 
 from __future__ import annotations
 
 import codecs
+import os
 import re
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from fnmatch import fnmatch
+from pathlib import Path
 from urllib.parse import urlparse
 
 from claude_guard.config import Policy
@@ -60,9 +69,18 @@ SENSITIVE_PATH = re.compile(_SENSITIVE_PATH)
 
 # Files whose modification gives persistence or privilege.
 PERSISTENCE_PATH = re.compile(
-    r"\.ssh/authorized_keys\b|(?:^|/)\.(?:bashrc|bash_profile|zshrc|zprofile|profile)$"
+    r"\.ssh/authorized_keys\b"
+    r"|(?:^|/)\.(?:bashrc|bash_profile|bash_login|zshrc|zshenv|zprofile|zlogin|profile)$"
     r"|^/etc/|\.git/hooks/|/LaunchAgents/|/LaunchDaemons/|crontab|/etc/cron"
 )
+
+# Claude Code settings hold the hooks, so changing them can switch the guard off.
+CLAUDE_SETTINGS_PATH = re.compile(
+    r"(?:^|/)\.claude/settings(?:\.local)?\.json$|(?:^|/)managed-settings\.json$"
+)
+CLAUDE_DIR = re.compile(r"(?:^|/)\.claude/?$")
+GUARD_TAMPER_DESCRIPTION = "Modification of claude-guard files or Claude Code settings"
+PERSISTENCE_DESCRIPTION = "Write to a startup, cron, hook or authorized_keys file"
 
 _DOWNLOADER = r"\b(?:curl|wget|fetch)\b"
 _INTERPRETER = r"(?:sudo\s+)?(?:ba|z|k|da|fi)?sh\b|(?:sudo\s+)?(?:python[0-9.]*|perl|ruby|node)\b"
@@ -211,6 +229,17 @@ RULES: tuple[CommandRule, ...] = (
         0.75,
     ),
     CommandRule(
+        "persistence_command",
+        "Scheduled task or service installed (persistence)",
+        re.compile(
+            r"\bcrontab\s+(?!-l\b)\S|\blaunchctl\s+(?:load|bootstrap|enable|submit)\b"
+            r"|\bsystemctl\s+(?:--user\s+)?(?:enable|link)\b"
+        ),
+        Category.DANGEROUS_COMMANDS,
+        Severity.HIGH,
+        0.85,
+    ),
+    CommandRule(
         "dns_exfiltration",
         "Command substitution inside a DNS lookup",
         re.compile(r"\b(?:dig|nslookup|host)\b[^\n;&|]{0,500}(?:\$\(|`)"),
@@ -286,7 +315,8 @@ class CommandsDetector:
 
     name = "commands"
 
-    def __init__(self, policy: Policy) -> None:
+    def __init__(self, policy: Policy, protected_paths: Iterable[Path] = ()) -> None:
+        self._protected = tuple(os.path.realpath(path) for path in protected_paths)
         self._commands_policy = policy.dangerous_commands
         self._exfil_policy = policy.data_exfiltration
         self._allowlist = [re.compile(p) for p in policy.dangerous_commands.allowlist]
@@ -297,7 +327,7 @@ class CommandsDetector:
         for segment in ctx.segments:
             if segment.tool_name is None or segment.tool_field is None:
                 continue
-            for hit in self._hits(segment):
+            for hit in self._hits(segment, ctx.cwd):
                 policy = (
                     self._exfil_policy
                     if hit.category is Category.DATA_EXFILTRATION
@@ -319,15 +349,15 @@ class CommandsDetector:
                     findings.append(finding)
         return findings
 
-    def _hits(self, segment: TextSegment) -> list[Hit]:
+    def _hits(self, segment: TextSegment, cwd: str | None) -> list[Hit]:
         field = segment.tool_field
         text = segment.text
         if field in COMMAND_FIELDS:
             if any(pattern.search(text) for pattern in self._allowlist):
                 return []
-            return self._command_hits(text)
+            return self._command_hits(text, cwd)
         if field in PATH_FIELDS:
-            return self._path_hits(segment.tool_name or "", text)
+            return self._path_hits(segment.tool_name or "", text, cwd)
         if field in CONTENT_FIELDS:
             return [
                 Hit(
@@ -339,15 +369,16 @@ class CommandsDetector:
                     h.start,
                     h.end,
                 )
-                for h in self._command_hits(text)
+                for h in self._command_hits(text, cwd)
                 if h.rule != "sensitive_file_access"
             ]
         return []
 
-    def _command_hits(self, command: str, depth: int = 0) -> list[Hit]:
+    def _command_hits(self, command: str, cwd: str | None, depth: int = 0) -> list[Hit]:
         command = _expand_obfuscation(command)
         commands = _simple_commands(command)
         hits = self._rm_hits(commands)
+        hits.extend(self._write_hits(commands, cwd))
         seen_force_push = False
         for rule in RULES:
             match = rule.pattern.search(command)
@@ -377,7 +408,7 @@ class CommandsDetector:
                             start=simple.start,
                             end=simple.end,
                         )
-                        for hit in self._command_hits(inner, depth + 1)
+                        for hit in self._command_hits(inner, cwd, depth + 1)
                     )
             # Base64 literals that decode to commands, e.g. `echo cm0gLXJmIC8= | base64 -d | sh`.
             for decoded in decoded_candidates(command, encodings=("base64",)):
@@ -388,7 +419,7 @@ class CommandsDetector:
                         start=decoded.start,
                         end=decoded.end,
                     )
-                    for hit in self._command_hits(decoded.text, depth + 1)
+                    for hit in self._command_hits(decoded.text, cwd, depth + 1)
                 )
         return hits
 
@@ -431,20 +462,55 @@ class CommandsDetector:
                 )
         return hits
 
-    def _path_hits(self, tool_name: str, path: str) -> list[Hit]:
+    def _write_hits(self, commands: list[SimpleCommand], cwd: str | None) -> list[Hit]:
+        """Shell commands that modify guard files or persistence locations."""
         hits: list[Hit] = []
-        if tool_name in WRITE_TOOLS and PERSISTENCE_PATH.search(path):
-            hits.append(
-                Hit(
-                    "persistence_file_write",
-                    "Write to a startup, cron, hook or authorized_keys file",
-                    Category.DANGEROUS_COMMANDS,
-                    Severity.CRITICAL,
-                    0.85,
-                    0,
-                    len(path),
-                )
-            )
+        for simple in commands:
+            words = _strip_wrappers(simple.words)
+            if words and words[0] == "cd":
+                cwd = _change_directory(words[1:], cwd)
+                continue
+            for target in _write_targets(simple.words):
+                hits.extend(self._target_hits(target, cwd, simple.start, simple.end))
+        return hits
+
+    def _target_hits(self, target: WriteTarget, cwd: str | None, start: int, end: int) -> list[Hit]:
+        resolved = _resolve_path(target.path, cwd)
+        names = [target.path] if resolved is None else [target.path, resolved]
+        hits: list[Hit] = []
+        if self._tampers(target, resolved, names):
+            hits.append(_guard_tamper_hit(start, end))
+        if not target.removes and any(PERSISTENCE_PATH.search(name) for name in names):
+            hits.append(_persistence_hit(start, end))
+        return hits
+
+    def _tampers(self, target: WriteTarget, resolved: str | None, names: list[str]) -> bool:
+        if any(CLAUDE_SETTINGS_PATH.search(name) for name in names):
+            return True
+        if target.removes and any(CLAUDE_DIR.search(name) for name in names):
+            return True
+        if resolved is None:
+            return False
+        has_glob = any(char in resolved for char in "*?[")
+        for protected in self._protected:
+            if resolved == protected or resolved.startswith(f"{protected}/"):
+                return True
+            # Deleting or moving a parent directory takes the protected file with it. Root and
+            # home targets are already reported as recursive_delete_critical.
+            if (
+                target.removes
+                and not _CRITICAL_RM_TARGETS.match(target.path)
+                and protected.startswith(f"{resolved.rstrip('/')}/")
+            ):
+                return True
+            if has_glob and fnmatch(protected, resolved):
+                return True
+        return False
+
+    def _path_hits(self, tool_name: str, path: str, cwd: str | None) -> list[Hit]:
+        hits: list[Hit] = []
+        if tool_name in WRITE_TOOLS:
+            hits.extend(self._target_hits(WriteTarget(path, removes=False), cwd, 0, len(path)))
         match = SENSITIVE_PATH.search(path)
         if match:
             hits.append(
@@ -472,6 +538,30 @@ class CommandsDetector:
         return any(
             host == allowed or host.endswith(f".{allowed}") for allowed in self._allowed_hosts
         )
+
+
+def _guard_tamper_hit(start: int, end: int) -> Hit:
+    return Hit(
+        "guard_tamper",
+        GUARD_TAMPER_DESCRIPTION,
+        Category.DANGEROUS_COMMANDS,
+        Severity.CRITICAL,
+        0.95,
+        start,
+        end,
+    )
+
+
+def _persistence_hit(start: int, end: int) -> Hit:
+    return Hit(
+        "persistence_file_write",
+        PERSISTENCE_DESCRIPTION,
+        Category.DANGEROUS_COMMANDS,
+        Severity.CRITICAL,
+        0.85,
+        start,
+        end,
+    )
 
 
 def _hit(rule: CommandRule, start: int, end: int) -> Hit:
@@ -580,3 +670,84 @@ def _nested_commands(words: list[str]) -> list[str]:
     if name == "eval":
         return [" ".join(words[1:])]
     return []
+
+
+@dataclass(frozen=True)
+class WriteTarget:
+    """A path a shell command writes; `removes` when it may be deleted or moved away."""
+
+    path: str
+    removes: bool
+
+
+_REDIRECTIONS = frozenset({">", ">>", ">|", "&>", "&>>"})
+_REMOVE_COMMANDS = frozenset({"rm", "unlink", "rmdir", "shred"})
+_MODIFY_COMMANDS = frozenset({"tee", "touch", "truncate", "chmod", "chown", "chgrp"})
+_COPY_COMMANDS = frozenset({"cp", "ln", "install"})
+_IN_PLACE_EDITORS = frozenset({"sed", "perl", "ruby"})
+_IN_PLACE_FLAG = re.compile(r"-[a-zA-Z]*i|--in-place")
+
+
+def _write_targets(words: list[str]) -> list[WriteTarget]:
+    """Paths one simple command may modify: redirections plus known file-changing commands."""
+    targets: list[WriteTarget] = []
+    args: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word in _REDIRECTIONS and index + 1 < len(words):
+            targets.append(WriteTarget(words[index + 1], removes=False))
+            index += 2
+            continue
+        args.append(word)
+        index += 1
+
+    args = _strip_wrappers(args)
+    if not args:
+        return targets
+    name = args[0].rsplit("/", 1)[-1]
+    flags = [arg for arg in args[1:] if arg.startswith("-")]
+    operands = [arg for arg in args[1:] if arg and not arg.startswith("-")]
+    if name in _REMOVE_COMMANDS:
+        targets.extend(WriteTarget(operand, removes=True) for operand in operands)
+    elif name == "mv" and operands:
+        targets.extend(WriteTarget(operand, removes=True) for operand in operands[:-1])
+        targets.append(WriteTarget(operands[-1], removes=False))
+    elif name in _COPY_COMMANDS and operands:
+        targets.append(WriteTarget(operands[-1], removes=False))
+    elif name in _MODIFY_COMMANDS or (
+        name in _IN_PLACE_EDITORS and any(_IN_PLACE_FLAG.match(flag) for flag in flags)
+    ):
+        targets.extend(WriteTarget(operand, removes=False) for operand in operands)
+    elif name == "dd":
+        targets.extend(
+            WriteTarget(arg.removeprefix("of="), removes=False)
+            for arg in args[1:]
+            if arg.startswith("of=")
+        )
+    return targets
+
+
+_HOME_PREFIXES = ("~", "$HOME", "${HOME}")
+
+
+def _resolve_path(path: str, cwd: str | None) -> str | None:
+    """Absolute, symlink-free form of `path`; None when it is relative and `cwd` is unknown."""
+    for prefix in _HOME_PREFIXES:
+        if path == prefix or path.startswith(f"{prefix}/"):
+            path = str(Path.home()) + path[len(prefix) :]
+            break
+    if not os.path.isabs(path):
+        if cwd is None:
+            return None
+        path = os.path.join(cwd, path)
+    return os.path.realpath(path)
+
+
+def _change_directory(args: list[str], cwd: str | None) -> str | None:
+    operands = [arg for arg in args if not arg.startswith("-") or arg == "-"]
+    if not operands:
+        return str(Path.home())
+    if operands[0] == "-":
+        return None
+    return _resolve_path(operands[0], cwd)

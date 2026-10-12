@@ -68,6 +68,12 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def protected_paths(settings: Settings) -> tuple[Path, ...]:
+    """Guard files an agent must not modify: the policy, the audit log and Stop offsets."""
+    audit = settings.audit_path.expanduser()
+    return (settings.policy_path.expanduser(), audit, audit.parent / "sessions")
+
+
 class PolicyError(Exception):
     """Raised when policy.yaml is missing, unparsable or invalid."""
 

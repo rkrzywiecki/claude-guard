@@ -54,6 +54,7 @@ class HookInput(BaseModel):
 
     session_id: str | None = None
     transcript_path: str | None = None
+    cwd: str | None = None
     hook_event_name: str | None = None
     prompt: str | None = None
     tool_name: str | None = None
@@ -117,6 +118,8 @@ async def handle(event: HookEvent, stdin: str, settings: Settings) -> HookOutput
 
     if event is HookEvent.PRE_TOOL_USE:
         payload = {"tool_name": _tool_name(hook_input), "tool_input": hook_input.tool_input or {}}
+        if hook_input.cwd:
+            payload["cwd"] = hook_input.cwd
         verdict = await engine.inspect(
             Direction.TOOL_INPUT, payload, session_id=session, source=source
         )

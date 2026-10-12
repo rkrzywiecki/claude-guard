@@ -22,7 +22,7 @@ from collections.abc import Sequence
 import structlog
 
 from claude_guard.audit import AuditLog
-from claude_guard.config import Policy, Settings, get_settings, load_policy
+from claude_guard.config import Policy, Settings, get_settings, load_policy, protected_paths
 from claude_guard.detectors.base import Detector
 from claude_guard.detectors.commands import CommandsDetector
 from claude_guard.detectors.injection import InjectionDetector
@@ -61,7 +61,11 @@ class GuardEngine:
         self._detectors: tuple[Detector, ...] = tuple(
             detectors
             if detectors is not None
-            else (SecretsDetector(policy), InjectionDetector(policy), CommandsDetector(policy))
+            else (
+                SecretsDetector(policy),
+                InjectionDetector(policy),
+                CommandsDetector(policy, protected_paths(settings)),
+            )
         )
         self._judge = judge
         self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
@@ -123,6 +127,7 @@ class GuardEngine:
         extraction = extract(direction, payload)
         tool_name = payload.get("tool_name") if direction is Direction.TOOL_INPUT else None
         tool_input = payload.get("tool_input") if direction is Direction.TOOL_INPUT else None
+        cwd = payload.get("cwd") if direction is Direction.TOOL_INPUT else None
         ctx = InspectionContext(
             direction=direction,
             segments=tuple(extraction.segments),
@@ -130,6 +135,7 @@ class GuardEngine:
             tool_input=tool_input if isinstance(tool_input, dict) else None,
             session_id=session_id,
             notes=tuple(extraction.notes),
+            cwd=cwd if isinstance(cwd, str) else None,
         )
 
         results = await asyncio.gather(

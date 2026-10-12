@@ -299,6 +299,21 @@ Claude Code refuses to run the command and shows Claude the reason. Through the 
 response containing such a `tool_use` is replaced by a text notice, so the call is never
 executed.
 
+### Switching off the guard: denied
+
+Claude must not be able to remove the hooks or loosen the policy that watch it:
+
+```bash
+echo '{"hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Write","tool_input":{"file_path":".claude/settings.json","content":"{}"}}' \
+  | uv run claude-guard hook PreToolUse
+```
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"claude-guard: [dangerous_commands] Modification of claude-guard files or Claude Code settings (Write.file_path)"}}
+```
+
+The same applies to shell commands such as `sed -i ... policy.yaml` or `rm logs/audit.jsonl`.
+
 ## Limitations
 
 - **Heuristics are not complete.** Regexes and keyword rules catch known patterns and common
@@ -322,6 +337,10 @@ executed.
 - **Plain HTTP on loopback by default.** Without `GUARD_TLS_CERTFILE`/`GUARD_TLS_KEYFILE` prompts
   and API keys travel unencrypted between client and proxy. On `127.0.0.1` they never leave the
   machine, but any local user who can sniff loopback can read them. Non-loopback binds require TLS.
+- **Tamper protection follows file paths, not code.** Writes through the shell (`>`, `tee`,
+  `sed -i`, `cp`, `mv`, `rm`, ...) and file tools are recognized; a script that opens the policy
+  file itself (`python -c "open('policy.yaml', 'w')"`) is not. In the proxy the working
+  directory is unknown, so relative paths to guard files are not resolved.
 - **Hooks cannot rewrite content**: a secret in a prompt is blocked rather than redacted, and a
   tool result is flagged to Claude after the tool has already run.
 

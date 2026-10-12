@@ -76,6 +76,11 @@ Hooks cannot rewrite content, so `redact` is mapped to the closest safe behaviou
 
 All responses are JSON on stdout with exit code 0. When nothing was found, nothing is printed.
 
+`PreToolUse` passes the hook input's `cwd` to the engine, so relative paths in commands
+(`rm logs/audit.jsonl`) are resolved before they are checked for guard tampering. Edits to the
+policy, the audit log and `.claude/settings*.json` are denied: an agent must not be able to
+remove the hooks that watch it (see [policy.md](policy.md#guard-tampering)).
+
 ### Examples
 
 ```bash

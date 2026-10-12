@@ -114,6 +114,8 @@ class InspectionContext(BaseModel):
     tool_input: dict[str, JsonValue] | None = None
     session_id: str | None = None
     notes: tuple[str, ...] = ()
+    # Working directory of a tool call (from Claude Code hooks), for resolving relative paths.
+    cwd: str | None = None
 
     @property
     def untrusted_segments(self) -> tuple[TextSegment, ...]:
