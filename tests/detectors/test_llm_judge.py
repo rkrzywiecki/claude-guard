@@ -11,10 +11,13 @@ import pytest
 from anthropic.types import Message
 
 from claude_guard.config import LlmJudgePolicy, Policy, PromptInjectionPolicy, Settings
+from claude_guard.detectors import llm_judge
 from claude_guard.detectors.llm_judge import (
     TOOL_NAME,
     LlmJudgeDetector,
     fair_shares,
+    has_credentials,
+    judge_client,
     needs_judgement,
     render_content,
     shorten,
@@ -433,3 +436,50 @@ def test_default_client_uses_policy_timeout_and_retries(monkeypatch: pytest.Monk
     client = detector._client
     assert client.timeout == 3.0
     assert client.max_retries == 1
+
+
+# --- credentials --------------------------------------------------------------------
+
+
+def client_stub(**credentials: Any) -> anthropic.AsyncAnthropic:
+    values = {"api_key": None, "auth_token": None, "credentials": None, **credentials}
+    return cast(anthropic.AsyncAnthropic, type("Client", (), values)())
+
+
+@pytest.mark.parametrize(
+    ("credentials", "expected"),
+    [
+        ({}, False),
+        ({"api_key": "key"}, True),
+        ({"auth_token": "token"}, True),
+        ({"credentials": object()}, True),  # e.g. a credentials profile
+    ],
+)
+def test_has_credentials(credentials: dict[str, Any], expected: bool) -> None:
+    assert has_credentials(client_stub(**credentials)) is expected
+
+
+def test_judge_client_uses_guard_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client = judge_client(LlmJudgePolicy(), Settings(ANTHROPIC_API_KEY="sk-test"))
+    assert client.api_key == "sk-test"
+    assert has_credentials(client)
+
+
+@pytest.mark.parametrize(("fail_mode", "action"), [("closed", Action.BLOCK), ("open", Action.WARN)])
+async def test_missing_credentials_skip_the_call(
+    monkeypatch: pytest.MonkeyPatch, fail_mode: str, action: Action
+) -> None:
+    monkeypatch.setattr(llm_judge, "has_credentials", lambda _: False)
+    create = AsyncMock()
+    monkeypatch.setattr(
+        llm_judge,
+        "judge_client",
+        lambda *_: cast(anthropic.AsyncAnthropic, MagicMock(**{"messages.create": create})),
+    )
+    detector = LlmJudgeDetector(enabled_policy(), Settings(fail_mode=fail_mode))
+    [finding] = await detector.detect(ctx())
+    create.assert_not_called()
+    assert finding.rule == "judge_unavailable"
+    assert finding.action is action
+    assert "no API credentials: set ANTHROPIC_API_KEY" in finding.message

@@ -7,7 +7,9 @@ and a missing or invalid tool call is retried.
 
 Transport errors (429, 5xx, connection problems) are retried by the SDK. The whole judgement is
 bounded by `llm_judge.timeout_seconds`. On failure the detector applies `GUARD_FAIL_MODE`:
-`closed` reports a blocking finding, `open` a warning.
+`closed` reports a blocking finding, `open` a warning. Without credentials (no
+`ANTHROPIC_API_KEY`, auth token or credentials profile) the judge is not called at all: the
+failure finding says what to set, and `serve` warns at start-up.
 
 The Anthropic SDK is imported only when a detector is created: importing it takes about 240 ms,
 which every hook process would pay even with the judge off (`claude-guard bench -s hooks`).
@@ -24,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from claude_guard.config import Policy, Settings
+from claude_guard.config import LlmJudgePolicy, Policy, Settings
 from claude_guard.detectors.base import build_finding, mask_secret, snippet
 from claude_guard.models import (
     OPERATOR_ROLES,
@@ -93,6 +95,28 @@ class JudgeOutput(BaseModel):
 
 class JudgeError(Exception):
     """The judge did not produce a usable verdict."""
+
+
+MISSING_CREDENTIALS = "no API credentials: set ANTHROPIC_API_KEY"
+
+
+def judge_client(policy: LlmJudgePolicy, settings: Settings) -> anthropic.AsyncAnthropic:
+    """The client the judge uses: GUARD's ANTHROPIC_API_KEY, else the SDK's own resolution
+    (environment, auth token, credentials profile)."""
+    import anthropic
+
+    api_key = settings.anthropic_api_key
+    return anthropic.AsyncAnthropic(
+        api_key=api_key.get_secret_value() if api_key else None,
+        timeout=policy.timeout_seconds,
+        max_retries=policy.max_retries,
+    )
+
+
+def has_credentials(client: anthropic.AsyncAnthropic) -> bool:
+    """False when every request would fail before leaving the process: the SDK then raises a
+    TypeError ("Could not resolve authentication method") instead of an API error."""
+    return bool(client.api_key or client.auth_token or client.credentials is not None)
 
 
 def needs_judgement(
@@ -289,24 +313,22 @@ class LlmJudgeDetector:
         settings: Settings,
         client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
-        import anthropic
-
         self._policy = policy.llm_judge
         self._settings = settings
         self._categories = [
             category for category in CATEGORY_DESCRIPTIONS if policy.for_category(category).enabled
         ]
-        api_key = settings.anthropic_api_key
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=api_key.get_secret_value() if api_key else None,
-            timeout=self._policy.timeout_seconds,
-            max_retries=self._policy.max_retries,
-        )
+        self._client = client or judge_client(self._policy, settings)
+        # Injected clients (tests) are trusted to be usable.
+        self._credentials = client is not None or has_credentials(self._client)
 
     async def detect(self, ctx: InspectionContext) -> list[Finding]:
         segments = [segment for segment in ctx.segments if segment.role not in OPERATOR_ROLES]
         if not self._policy.enabled or not segments or not self._categories:
             return []
+        if not self._credentials:
+            log.warning("llm_judge_failed", error_type="MissingCredentials")
+            return [self._failure_finding(MISSING_CREDENTIALS)]
         import anthropic  # already loaded by __init__
 
         try:
@@ -319,7 +341,8 @@ class LlmJudgeDetector:
                 error_type=type(exc).__name__,
                 status_code=getattr(exc, "status_code", None),
             )
-            return [self._failure_finding(exc)]
+            reason = "timed out" if isinstance(exc, TimeoutError) else type(exc).__name__
+            return [self._failure_finding(reason)]
         return self._to_findings(ctx, segments, output)
 
     async def _judge(self, ctx: InspectionContext, segments: Sequence[TextSegment]) -> JudgeOutput:
@@ -374,9 +397,8 @@ class LlmJudgeDetector:
                 findings.append(finding)
         return findings
 
-    def _failure_finding(self, exc: Exception) -> Finding:
+    def _failure_finding(self, reason: str) -> Finding:
         closed = self._settings.fail_mode == "closed"
-        reason = "timed out" if isinstance(exc, TimeoutError) else type(exc).__name__
         return Finding(
             detector=self.name,
             category=Category.LLM_JUDGE,

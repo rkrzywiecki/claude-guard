@@ -189,3 +189,43 @@ def test_serve_rejects_half_tls_config(env: Path, tmp_path: Path) -> None:
     code, _, err = run("serve", "--tls-certfile", str(tmp_path / "cert.pem"))
     assert code == 2
     assert "both a certificate and a key" in err
+
+
+def test_serve_warns_when_the_judge_has_no_credentials(
+    env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+
+    from claude_guard.detectors import llm_judge
+
+    policy = tmp_path / "judge.yaml"
+    policy.write_text("llm_judge:\n  enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("GUARD_POLICY_PATH", str(policy))
+    get_settings.cache_clear()
+    monkeypatch.setattr(llm_judge, "has_credentials", lambda _: False)
+    monkeypatch.setattr(uvicorn.Server, "run", lambda self: None)
+    code, _, err = run("serve")
+    assert code == 0
+    assert "llm_judge_without_credentials" in err
+    assert "set ANTHROPIC_API_KEY" in err
+
+
+def test_serve_without_judge_does_not_warn(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn.Server, "run", lambda self: None)
+    code, _, err = run("serve")
+    assert code == 0
+    assert "llm_judge_without_credentials" not in err
+
+
+def test_serve_reports_an_invalid_policy(
+    env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = tmp_path / "bad.yaml"
+    policy.write_text("llm_judge: [broken\n", encoding="utf-8")
+    monkeypatch.setenv("GUARD_POLICY_PATH", str(policy))
+    get_settings.cache_clear()
+    code, _, err = run("serve")
+    assert code == 2
+    assert "error: cannot parse" in err

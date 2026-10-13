@@ -166,6 +166,13 @@ The judge timed out, hit an API error, refused, or returned invalid output after
 `GUARD_FAIL_MODE=closed` this blocks. Check `ANTHROPIC_API_KEY`, `GUARD_JUDGE_MODEL` and
 `llm_judge.timeout_seconds`; the log line `llm_judge_failed` names the error type.
 
+**`judge_unavailable` with `no API credentials: set ANTHROPIC_API_KEY`**
+`llm_judge` is enabled, but the judge found no `ANTHROPIC_API_KEY` (environment or `.env`), no
+`ANTHROPIC_AUTH_TOKEN` and no credentials profile, so it is not called at all. With
+`GUARD_FAIL_MODE=closed` every judged request is blocked. `serve` warns about this at start-up
+(`llm_judge_without_credentials`). Set the key, or turn the judge off (`llm_judge.enabled:
+false`). In hooks the judge only runs with `GUARD_HOOK_LLM=true`, and then needs the key as well.
+
 **The judge never runs**
 In `mode: untrusted` (default) it runs when the current turn contains untrusted content (tool
 results, fetched documents) or the heuristics are unsure; a plain prompt with no findings is not

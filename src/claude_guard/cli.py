@@ -33,7 +33,8 @@ def serve(
     import structlog
     import uvicorn
 
-    from claude_guard.config import is_loopback
+    from claude_guard.config import PolicyError, is_loopback, load_policy
+    from claude_guard.detectors.llm_judge import has_credentials, judge_client
     from claude_guard.proxy.app import create_app
     from claude_guard.proxy.server import ServeConfigError, build_serve_config, uvicorn_config
 
@@ -48,6 +49,18 @@ def serve(
         raise typer.Exit(2) from exc
 
     log = structlog.get_logger()
+    try:
+        policy = load_policy(settings.policy_path)
+    except PolicyError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if policy.llm_judge.enabled and not has_credentials(judge_client(policy.llm_judge, settings)):
+        log.warning(
+            "llm_judge_without_credentials",
+            fail_mode=settings.fail_mode,
+            message="llm_judge is enabled but no API credentials were found (set "
+            "ANTHROPIC_API_KEY): every judged request gets judge_unavailable",
+        )
     if config.insecure_bind:
         log.warning(
             "insecure_bind",
