@@ -67,15 +67,15 @@ Your numbers will differ; run the benchmark on the target machine.
 | proxy | stream `audit`, total | 110 KB | 76 | 80 |
 | hooks | `python -c pass` (interpreter floor) | | 11 | 22 |
 | hooks | PreToolUse, in process | 0.3 KB | 1.7 | 1.8 |
-| hooks | PreToolUse, venv script | 0.3 KB | 382 | 389 |
-| hooks | PreToolUse, `uv run` (as installed) | 0.3 KB | 397 | 408 |
-| hooks | PostToolUse, `uv run` (as installed) | 37 KB | 418 | 432 |
-| hooks | UserPromptSubmit, `uv run` (as installed) | 0.2 KB | 397 | 412 |
+| hooks | PreToolUse, venv script | 0.3 KB | 130 | 135 |
+| hooks | PreToolUse, `uv run` (as installed) | 0.3 KB | 145 | 146 |
+| hooks | PostToolUse, `uv run` (as installed) | 37 KB | 166 | 170 |
+| hooks | UserPromptSubmit, `uv run` (as installed) | 0.2 KB | 145 | 149 |
 
 With `--idle-ms 500` (a pause before every call, as between real requests) CPU-bound work is
 slower because the CPU leaves its high-performance state while idle: the medium request goes
-from 64 to about 100 ms in the proxy, a small one from 3 to 14 ms, and hooks from about 400 to
-about 440 ms. Real traffic has such gaps (the model takes seconds to answer), so treat the idle
+from 64 to about 100 ms in the proxy, a small one from 3 to 14 ms, and hooks from about 145 to
+about 180 ms. Real traffic has such gaps (the model takes seconds to answer), so treat the idle
 numbers as the realistic ones on laptops and the default ones as a lower bound.
 
 ## Reading the results
@@ -88,12 +88,12 @@ numbers as the realistic ones on laptops and the default ones as a lower bound.
 - **`buffer` streaming delays the first token by the whole generation time**, plus inspection.
   In the table the fake generation takes about 110 ms; with a real model it is the full response
   time (seconds). `audit` mode only adds the request inspection to the first token.
-- **Hooks cost about 0.4 s per event, almost all of it process start-up.** The inspection itself
-  takes 2 ms for a tool call (20 ms for a 37 KB tool result); `uv run` adds about 15 ms; the
-  rest is importing Python modules, mostly the Anthropic SDK (about 240 ms of the 340 ms import
-  time, measured with `python -X importtime`), which hooks only need with `GUARD_HOOK_LLM=true`.
-  A session with 50 tool calls spends about 2 × 50 × 0.4 s = 40 s in `PreToolUse` and
-  `PostToolUse` hooks.
+- **Hooks cost about 0.15 s per event, almost all of it process start-up.** The inspection
+  itself takes 2 ms for a tool call (20 ms for a 37 KB tool result); `uv run` adds about 15 ms;
+  the rest is starting Python and importing modules (about 110 ms, see `python -X importtime`).
+  A session with 50 tool calls spends about 2 × 50 × 0.15 s = 15 s in `PreToolUse` and
+  `PostToolUse` hooks. The Anthropic SDK (about 240 ms to import) is loaded only when the judge
+  runs; before that change every hook took about 0.4 s.
 - **The LLM judge is a model round trip.** Expect hundreds of milliseconds to seconds per judged
   payload, depending on the model and its load; run `-s judge` to measure it. In `untrusted`
   mode it runs on most agent turns.

@@ -136,7 +136,7 @@ The installer never overwrites a file it cannot parse. Fix the JSON (`python -m 
 .claude/settings.json` shows where it breaks) and run it again.
 
 **Hooks are slow**
-Heuristic hooks take about 0.4 s per event, almost all of it starting Python and importing
+Heuristic hooks take about 0.15 s per event, almost all of it starting Python and importing
 modules (`uv run` itself adds about 15 ms); the inspection takes a few milliseconds. Measure it
 with `uv run claude-guard bench -s hooks` (see [performance.md](performance.md)). If you enabled
 `GUARD_HOOK_LLM=true`, each hook may also call the judge; keep `llm_judge.timeout_seconds` below

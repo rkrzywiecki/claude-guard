@@ -308,7 +308,7 @@ Start Claude Code in the project (`claude`) and try:
 | (end of every turn) | The new part of the transcript is audited (`Stop`), findings go to the audit log |
 
 A prompt containing a secret is blocked too (hooks cannot redact), with a request to remove the
-sensitive data. Each hook takes about 0.4 s. Details: [hooks.md](hooks.md).
+sensitive data. Each hook takes about 0.15 s. Details: [hooks.md](hooks.md).
 
 ## 7. Read the audit log
 

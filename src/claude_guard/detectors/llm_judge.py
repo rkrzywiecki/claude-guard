@@ -8,6 +8,9 @@ and a missing or invalid tool call is retried.
 Transport errors (429, 5xx, connection problems) are retried by the SDK. The whole judgement is
 bounded by `llm_judge.timeout_seconds`. On failure the detector applies `GUARD_FAIL_MODE`:
 `closed` reports a blocking finding, `open` a warning.
+
+The Anthropic SDK is imported only when a detector is created: importing it takes about 240 ms,
+which every hook process would pay even with the judge off (`claude-guard bench -s hooks`).
 """
 
 from __future__ import annotations
@@ -16,11 +19,9 @@ import asyncio
 import secrets
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import anthropic
 import structlog
-from anthropic.types import Message, ToolParam, ToolUseBlock
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claude_guard.config import Policy, Settings
@@ -34,6 +35,10 @@ from claude_guard.models import (
     Severity,
     TextSegment,
 )
+
+if TYPE_CHECKING:
+    import anthropic
+    from anthropic.types import Message, ToolParam
 
 log = structlog.get_logger(__name__)
 
@@ -265,7 +270,7 @@ def parse_response(message: Message) -> JudgeOutput:
     if message.stop_reason == "refusal":
         raise JudgeError("judge refused to review the content")
     for block in message.content:
-        if isinstance(block, ToolUseBlock) and block.name == TOOL_NAME:
+        if block.type == "tool_use" and block.name == TOOL_NAME:
             try:
                 return JudgeOutput.model_validate(block.input)
             except ValidationError as exc:
@@ -284,6 +289,8 @@ class LlmJudgeDetector:
         settings: Settings,
         client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
+        import anthropic
+
         self._policy = policy.llm_judge
         self._settings = settings
         self._categories = [
@@ -300,6 +307,8 @@ class LlmJudgeDetector:
         segments = [segment for segment in ctx.segments if segment.role not in OPERATOR_ROLES]
         if not self._policy.enabled or not segments or not self._categories:
             return []
+        import anthropic  # already loaded by __init__
+
         try:
             async with asyncio.timeout(self._policy.timeout_seconds):
                 output = await self._judge(ctx, segments)

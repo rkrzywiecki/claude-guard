@@ -247,8 +247,8 @@ tool round trips.
 | Engine | Response (text + tool_use) | 0.7 KB | 0.4 ms | 2.7 ms |
 | Engine | Tool input (Bash) | 0.1 KB | 0.2 ms | 1.8 ms |
 | Engine | Tool output (37 KB file) | 37 KB | 21 ms | 52 ms |
-| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 397 ms | 437 ms |
-| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 418 ms | 469 ms |
+| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 145 ms | 181 ms |
+| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 166 ms | 222 ms |
 | Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.7 ms | 9 ms |
 | Hooks | `python -c pass` (interpreter floor) | | 11 ms | 36 ms |
 
@@ -267,16 +267,15 @@ the first token waits for the whole response.
 - **Streaming: choose between latency and blocking.** `audit` mode only delays the first token by
   the request inspection; `buffer` mode holds every token until the response is complete and
   inspected, so the user sees nothing for the full generation time.
-- **Hooks: about 0.4 s per event, almost all of it process start-up.** The inspection itself takes
-  about 2 ms for a tool call; `uv run` adds about 15 ms; the rest is importing Python modules,
-  mostly the Anthropic SDK (about 240 ms of the 340 ms import time), which hooks only need with
-  `GUARD_HOOK_LLM=true`. A session with 50 tool calls spends about 40 s in `PreToolUse` and
-  `PostToolUse` hooks.
+- **Hooks: about 0.15 s per event, almost all of it process start-up.** The inspection itself
+  takes about 2 ms for a tool call; `uv run` adds about 15 ms; the rest is starting Python and
+  importing modules (about 110 ms). A session with 50 tool calls spends about 15 s in
+  `PreToolUse` and `PostToolUse` hooks. The Anthropic SDK used to be imported by every hook
+  (about 240 ms, 0.4 s per hook in total); it is now loaded only when the judge runs.
 - **The LLM judge is an extra model round trip** per judged payload (hundreds of milliseconds to
   seconds, depending on the model); measure it with `-s judge`.
-- **Possible improvements:** import the Anthropic SDK lazily, only when the judge runs (roughly
-  halves hook latency), and cache verdicts of history already inspected (removes most of the
-  proxy's per-KB cost in long sessions).
+- **Possible improvement:** cache verdicts of history already inspected (would remove most of
+  the proxy's per-KB cost in long sessions).
 
 Method, full results and how to read them: [docs/performance.md](docs/performance.md).
 
@@ -444,7 +443,7 @@ What claude-guard defends against, and what it leaves out, is described in
   injection there from the judge (the heuristics always see the full text).
 - **Latency grows with the context.** The proxy rescans the whole conversation on every
   request (about 0.6 ms per KB on an Apple M5 Pro), and each hook is a new Python process (about
-  0.4 s). Measure your setup with `claude-guard bench`.
+  0.15 s). Measure your setup with `claude-guard bench`.
 - **Audit streaming mode cannot block.** With `GUARD_STREAM_MODE=audit` responses reach the
   client before inspection; violations are only logged. `buffer` mode adds latency instead: no
   tokens are shown until generation finishes.

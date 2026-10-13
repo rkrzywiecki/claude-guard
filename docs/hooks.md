@@ -120,7 +120,7 @@ Errors are logged as JSON on stderr; stdout carries only the hook response.
 
 ## Performance and the LLM judge
 
-With heuristics only, a hook runs in about 0.4 s including `uv run` start-up, and stays well
+With heuristics only, a hook runs in about 0.15 s including `uv run` start-up, and stays well
 under 5 s for prompts of several hundred kilobytes. The LLM judge is off in hooks by default;
 set `GUARD_HOOK_LLM=true` (and enable `llm_judge` in `policy.yaml`) to use it, keeping
 `llm_judge.timeout_seconds` below the hook timeout.

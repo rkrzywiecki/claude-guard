@@ -108,7 +108,7 @@ claude-guard sits on the two paths where that can be observed:
 | Inspects tool results before the model reads them | yes (next request) | yes (next request) | flagged to Claude after the tool ran |
 | Inspects MCP tool definitions | yes | yes | no, Claude Code does not pass them |
 | Covers clients other than Claude Code | yes | yes | no |
-| Extra latency | until the response completes | none for the client | about 0.4 s per hook |
+| Extra latency | until the response completes | none for the client | about 0.15 s per hook |
 
 Using both integrations together gives the widest coverage: the proxy sees the full context and
 redacts secrets, the hooks stop tool calls inside Claude Code even when the proxy is not in the

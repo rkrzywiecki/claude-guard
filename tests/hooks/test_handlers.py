@@ -1,6 +1,9 @@
 """Hook tests: JSON on stdin -> expected stdout and exit code."""
 
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -348,3 +351,38 @@ def test_cli_hook_reads_stdin(
 def test_cli_rejects_unknown_event() -> None:
     result = CliRunner().invoke(app, ["hook", "SessionStart"], input="{}")
     assert result.exit_code == 2
+
+
+# --- start-up cost ------------------------------------------------------------------
+
+
+def test_hook_without_judge_does_not_import_anthropic(tmp_path: Path, repo_root: Path) -> None:
+    """The Anthropic SDK takes about 240 ms to import; hooks pay it only with GUARD_HOOK_LLM."""
+    script = (
+        "import sys\n"
+        "from claude_guard.cli import app\n"
+        "try:\n"
+        "    app(['hook', 'PreToolUse'])\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "print('anthropic' in sys.modules, file=sys.stderr)\n"
+    )
+    stdin = json.dumps(
+        base(HookEvent.PRE_TOOL_USE, tool_name="Bash", tool_input={"command": "rm -rf /"})
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GUARD_POLICY_PATH": str(repo_root / "policy.yaml"),
+            "GUARD_AUDIT_PATH": str(tmp_path / "audit.jsonl"),
+            "GUARD_HOOK_LLM": "false",
+        },
+    )
+    assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert result.stderr.strip().splitlines()[-1] == "False"
