@@ -1,4 +1,4 @@
-"""Terminal rendering (rich) for `scan` and `report`.
+"""Terminal rendering (rich) for `scan`, `report` and `bench`.
 
 Values come from audit records, so excerpts and messages are already secret-masked.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
@@ -16,6 +17,9 @@ from claude_guard.audit import AuditRecord
 from claude_guard.models import Action
 from claude_guard.payload import JsonObject
 from claude_guard.report import Report
+
+if TYPE_CHECKING:  # bench pulls in uvicorn and the proxy; scan and report do not need them
+    from claude_guard.bench import BenchReport
 
 ACTION_STYLES = {
     Action.ALLOW.value: "green",
@@ -106,3 +110,33 @@ def print_report(report: Report, path: Path) -> None:
             f"Inspection time: avg {report.duration_ms_avg} ms, p95 {report.duration_ms_p95} ms",
             highlight=False,
         )
+
+
+def print_bench(report: BenchReport) -> None:
+    console = _console()
+    console.print(
+        f"Python {report.python} on {report.platform}, policy {report.policy_path}",
+        highlight=False,
+        markup=False,
+    )
+    table = Table(title="Latency added by claude-guard (ms)")
+    for column in ("Scenario", "Case", "Payload"):
+        table.add_column(column)
+    for column in ("p50", "p95", "p99", "mean", "n", "direct p50"):
+        table.add_column(column, justify="right")
+    for result in report.results:
+        added = result.added
+        table.add_row(
+            result.scenario.value,
+            result.case,
+            f"{result.payload_bytes / 1024:.1f} KB" if result.payload_bytes is not None else "",
+            f"{added.p50_ms:.2f}",
+            f"{added.p95_ms:.2f}",
+            f"{added.p99_ms:.2f}",
+            f"{added.mean_ms:.2f}",
+            str(added.samples),
+            f"{result.baseline.p50_ms:.2f}" if result.baseline else "",
+        )
+    console.print(table)
+    for note in report.notes:
+        console.print(f"note: {note}", highlight=False, markup=False)

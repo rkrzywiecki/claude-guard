@@ -218,6 +218,27 @@ uv run claude-guard report --since 24h                                   # audit
 override with `--direction`. Every inspection (proxy, hooks, scan) is appended to
 `logs/audit.jsonl` with secrets masked.
 
+## Measuring latency
+
+```bash
+uv run claude-guard bench                # engine, proxy and hooks, about a minute
+uv run claude-guard bench --idle-ms 500  # pause before each call, like real traffic (~7 min)
+uv run claude-guard bench -s judge       # real LLM judge calls (costs tokens)
+```
+
+`bench` reports the latency claude-guard adds (p50/p95/p99) on your machine with your
+`policy.yaml`, using a local fake Messages API, so nothing reaches the real API except in the
+`judge` scenario. Reference results on an Apple M5 Pro (p50):
+
+| Where | Added latency |
+|---|---|
+| Proxy, request with 12 KB / 110 KB / 450 KB of context | 3 ms / 64 ms / 275 ms |
+| Proxy, streamed response | `audit`: request inspection only; `buffer`: first token waits for the whole response |
+| Hook per event (`uv run`, as installed) | about 400 ms, mostly Python start-up and imports |
+| LLM judge (when enabled) | one model call per judged payload |
+
+Method, full results and how to read them: [docs/performance.md](docs/performance.md).
+
 ## Configuration
 
 Environment variables (or `.env`, see [.env.example](.env.example); an empty value means "not set"):
@@ -380,6 +401,9 @@ What claude-guard defends against, and what it leaves out, is described in
   borderline heuristic results. It is off in hooks unless `GUARD_HOOK_LLM=true`. Content above
   `max_input_chars` is shortened in the middle, so a very long payload can still hide an
   injection there from the judge (the heuristics always see the full text).
+- **Latency grows with the context.** The proxy rescans the whole conversation on every
+  request (about 0.6 ms per KB on an Apple M5 Pro), and each hook is a new Python process (about
+  0.4 s). Measure your setup with `claude-guard bench`.
 - **Audit streaming mode cannot block.** With `GUARD_STREAM_MODE=audit` responses reach the
   client before inspection; violations are only logged. `buffer` mode adds latency instead: no
   tokens are shown until generation finishes.
@@ -413,6 +437,7 @@ What claude-guard defends against, and what it leaves out, is described in
 - [docs/proxy.md](docs/proxy.md): endpoints, headers, streaming, TLS, metrics
 - [docs/hooks.md](docs/hooks.md): hook events, installer, fail mode
 - [docs/troubleshooting.md](docs/troubleshooting.md): common problems
+- [docs/performance.md](docs/performance.md): latency benchmark and reference results
 - [docs/threat-model.md](docs/threat-model.md): assets, adversaries, trust boundaries, out of
   scope
 

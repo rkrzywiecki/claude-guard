@@ -96,6 +96,11 @@ In `buffer` mode nothing is shown until the full response has been generated and
 proxy only sends `ping` events meanwhile. Use `GUARD_STREAM_MODE=audit` for live streaming,
 accepting that responses are then only logged, not blocked.
 
+**Requests through the proxy get slower as the session grows**
+Every request carries the whole conversation and all of it is scanned: about 0.6 ms per KB of
+context on an Apple M5 Pro. `uv run claude-guard bench -s proxy` shows the cost on your machine
+(see [performance.md](performance.md)); custom rules with expensive regexes add to it.
+
 **`audit_mode_violation` warnings in the log**
 With `GUARD_STREAM_MODE=audit` a streamed response violated the policy after it was delivered.
 Check the audit log entry with `source: "proxy:audit"`.
@@ -131,7 +136,9 @@ The installer never overwrites a file it cannot parse. Fix the JSON (`python -m 
 .claude/settings.json` shows where it breaks) and run it again.
 
 **Hooks are slow**
-Heuristic hooks take about 0.4 s, mostly `uv run` start-up. If you enabled
+Heuristic hooks take about 0.4 s per event, almost all of it starting Python and importing
+modules (`uv run` itself adds about 15 ms); the inspection takes a few milliseconds. Measure it
+with `uv run claude-guard bench -s hooks` (see [performance.md](performance.md)). If you enabled
 `GUARD_HOOK_LLM=true`, each hook may also call the judge; keep `llm_judge.timeout_seconds` below
 the hook `timeout` (15 s; 30 s for Stop).
 

@@ -1,4 +1,4 @@
-"""Command-line interface: serve, scan, hook, install-hooks, report."""
+"""Command-line interface: serve, scan, hook, install-hooks, report, bench."""
 
 import sys
 from pathlib import Path
@@ -209,3 +209,57 @@ def report(
         from claude_guard.render import print_report
 
         print_report(summary, path)
+
+
+@app.command()
+def bench(
+    scenarios: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scenario",
+            "-s",
+            help="engine, proxy, hooks or judge (repeatable; default: engine, proxy, hooks). "
+            "judge makes real API calls.",
+        ),
+    ] = None,
+    iterations: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Samples per case (default: engine 50, proxy 20, hooks 10, judge 5)."
+        ),
+    ] = None,
+    idle_ms: Annotated[
+        int,
+        typer.Option(
+            min=0,
+            help="Pause before each measured call, like the gap between real requests "
+            "(CPU power states make a cold call slower).",
+        ),
+    ] = 0,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the results as JSON.")] = False,
+) -> None:
+    """Measure the latency claude-guard adds (engine, proxy, hooks, LLM judge)."""
+    from claude_guard.bench import DEFAULT_SCENARIOS, BenchError, Scenario, run_bench
+    from claude_guard.config import PolicyError
+
+    settings = get_settings()
+    configure_logging("WARNING")
+    try:
+        selected = [Scenario(name) for name in scenarios] if scenarios else DEFAULT_SCENARIOS
+        report_ = run_bench(
+            settings,
+            selected,
+            iterations=iterations,
+            idle=idle_ms / 1000,
+            progress=lambda message: typer.echo(message, err=True),
+        )
+    except (BenchError, PolicyError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    if as_json:
+        typer.echo(report_.model_dump_json(indent=2))
+    else:
+        from claude_guard.render import print_bench
+
+        print_bench(report_)

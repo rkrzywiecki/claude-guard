@@ -30,7 +30,7 @@ def run(*args: str, stdin: str | None = None) -> tuple[int, str, str]:
 def test_help_lists_commands() -> None:
     code, out, _ = run("--help")
     assert code == 0
-    for command in ("serve", "scan", "hook", "install-hooks", "report"):
+    for command in ("serve", "scan", "hook", "install-hooks", "report", "bench"):
         assert command in out
 
 
