@@ -96,10 +96,15 @@ In `buffer` mode nothing is shown until the full response has been generated and
 proxy only sends `ping` events meanwhile. Use `GUARD_STREAM_MODE=audit` for live streaming,
 accepting that responses are then only logged, not blocked.
 
-**Requests through the proxy get slower as the session grows**
-Every request carries the whole conversation and all of it is scanned: about 0.6 ms per KB of
-context on an Apple M5 Pro. `uv run claude-guard bench -s proxy` shows the cost on your machine
-(see [performance.md](performance.md)); custom rules with expensive regexes add to it.
+**The first request of a session is slower than the next ones**
+Expected: the first request through the proxy inspects the whole context (about 0.6 ms per KB
+on an Apple M5 Pro); later requests reuse the findings of messages already inspected and only
+scan new ones. Every request is inspected in full again after a proxy restart, when the client
+compacts or rewrites the conversation, or with `GUARD_INSPECTION_CACHE_SIZE=0`. Many concurrent
+long sessions can evict each other's entries: raise `GUARD_INSPECTION_CACHE_SIZE` (each entry
+is small: a hash and the unit's findings). `claude_guard_inspection_cache_hits_total` and
+`..._misses_total` in `/metrics` show how well it works; `uv run claude-guard bench -s proxy`
+shows the cost on your machine (see [performance.md](performance.md)).
 
 **`audit_mode_violation` warnings in the log**
 With `GUARD_STREAM_MODE=audit` a streamed response violated the policy after it was delivered.

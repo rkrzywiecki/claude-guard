@@ -239,29 +239,36 @@ tool round trips.
 
 | Integration | Case | Payload | Added, hot (p50) | Added, after idle (p50) |
 |---|---|---:|---:|---:|
-| Proxy | Request, 1 tool turn | 12 KB | 3 ms | 14 ms |
-| Proxy | Request, 10 tool turns | 110 KB | 64 ms | 100 ms |
-| Proxy | Request, 50 tool turns | 450 KB | 275 ms | 299 ms |
-| Proxy | Stream `audit`, first token (10 turns) | 110 KB | 75 ms | 101 ms |
-| Proxy | Stream `buffer`, first token (10 turns) | 110 KB | 196 ms | 209 ms |
+| Proxy | Request, 1 tool turn, first of the conversation | 12 KB | 3.5 ms | 10 ms |
+| Proxy | Request, 1 tool turn, next turn | 12 KB | 1.2 ms | 5 ms |
+| Proxy | Request, 10 tool turns, first of the conversation | 111 KB | 68 ms | 92 ms |
+| Proxy | Request, 10 tool turns, next turn | 111 KB | 4.9 ms | 16 ms |
+| Proxy | Request, 50 tool turns, first of the conversation | 463 KB | 292 ms | 321 ms |
+| Proxy | Request, 50 tool turns, next turn | 463 KB | 9.3 ms | 22 ms |
+| Proxy | Stream `audit`, first token (10 turns, inspected in full) | 111 KB | 75 ms | 86 ms |
+| Proxy | Stream `buffer`, first token (10 turns, inspected in full) | 111 KB | 183 ms | 194 ms |
 | Engine | Response (text + tool_use) | 0.7 KB | 0.4 ms | 2.7 ms |
 | Engine | Tool input (Bash) | 0.1 KB | 0.2 ms | 1.8 ms |
-| Engine | Tool output (37 KB file) | 37 KB | 21 ms | 52 ms |
-| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 145 ms | 181 ms |
-| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 166 ms | 222 ms |
-| Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.7 ms | 9 ms |
+| Engine | Tool output (37 KB file) | 37 KB | 22 ms | 52 ms |
+| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 147 ms | 181 ms |
+| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 170 ms | 222 ms |
+| Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.9 ms | 9 ms |
 | Hooks | `python -c pass` (interpreter floor) | | 11 ms | 36 ms |
 
-The `buffer` row includes the fake upstream's 110 ms of simulated generation: with a real model
-the first token waits for the whole response.
+"Next turn" is how a running session looks: the previous request of the conversation went
+through the proxy, so only the newest assistant message and tool result are new. The `buffer`
+row includes the fake upstream's 110 ms of simulated generation: with a real model the first
+token waits for the whole response.
 
 ### Conclusions
 
-- **Proxy: the cost grows with the context, about 0.6 ms per KB.** Every request carries the
-  whole conversation and all of it is scanned again, including history inspected on earlier
-  requests. Short sessions add a few milliseconds; a long Claude Code session (hundreds of KB)
-  adds 0.1 to 0.3 s per request. That is small next to a model's time to first token (usually
-  one to several seconds), but it is paid on every turn.
+- **Proxy: within a session only new messages cost.** The first request of a conversation is
+  scanned in full, about 0.6 ms per KB (68 ms for 111 KB, 292 ms for 463 KB). Every request
+  carries the whole conversation, but the inspection cache keeps the findings of each message,
+  tool definition and system prompt already seen, so a next turn costs a few milliseconds even
+  with 463 KB of context (9 ms, about 30 times less). What remains is extracting and hashing the
+  payload, which grows slowly with the context. A restarted proxy, a compacted conversation or
+  an evicted entry fall back to a full inspection of the affected messages.
 - **Responses and tool calls are cheap.** Inspecting a response or a Bash command takes well
   under a millisecond hot, a few milliseconds after idle.
 - **Streaming: choose between latency and blocking.** `audit` mode only delays the first token by
@@ -274,8 +281,6 @@ the first token waits for the whole response.
   (about 240 ms, 0.4 s per hook in total); it is now loaded only when the judge runs.
 - **The LLM judge is an extra model round trip** per judged payload (hundreds of milliseconds to
   seconds, depending on the model); measure it with `-s judge`.
-- **Possible improvement:** cache verdicts of history already inspected (would remove most of
-  the proxy's per-KB cost in long sessions).
 
 Method, full results and how to read them: [docs/performance.md](docs/performance.md).
 
@@ -299,6 +304,7 @@ Environment variables (or `.env`, see [.env.example](.env.example); an empty val
 | `GUARD_STREAM_MODE` | `buffer` | `buffer`: inspect before streaming; `audit`: stream live, inspect afterwards. |
 | `GUARD_PASSTHROUGH` | `block` | `/v1/*` endpoints the proxy cannot inspect (e.g. Files API uploads): `block` answers 403, `allow` forwards them as is. |
 | `GUARD_HOOK_LLM` | `false` | Use the LLM judge inside hooks. |
+| `GUARD_INSPECTION_CACHE_SIZE` | `10000` | Request units (messages, tool definitions, system prompt) whose findings the proxy keeps for later requests of a conversation; `0` disables the cache. |
 | `GUARD_MAX_BODY_BYTES` | `33554432` (32 MiB) | Larger request bodies get HTTP 413 `request_too_large`. Raise it for big Message Batches. |
 | `GUARD_MAX_STREAM_BYTES` | `33554432` (32 MiB) | Buffered stream above this size is not inspected: error event (`closed`) or delivered uninspected (`open`). |
 | `GUARD_PROXY_TOKEN` | – | Shared secret clients must send in `x-claude-guard-token` (all endpoints except `/healthz`). Recommended whenever the proxy is reachable from the network. |
@@ -441,9 +447,10 @@ What claude-guard defends against, and what it leaves out, is described in
   borderline heuristic results. It is off in hooks unless `GUARD_HOOK_LLM=true`. Content above
   `max_input_chars` is shortened in the middle, so a very long payload can still hide an
   injection there from the judge (the heuristics always see the full text).
-- **Latency grows with the context.** The proxy rescans the whole conversation on every
-  request (about 0.6 ms per KB on an Apple M5 Pro), and each hook is a new Python process (about
-  0.15 s). Measure your setup with `claude-guard bench`.
+- **The first request of a conversation costs the most.** The proxy inspects the whole context
+  once (about 0.6 ms per KB on an Apple M5 Pro); later requests reuse cached findings and only
+  inspect new messages. The cache is in memory: a restart starts over. Each hook is a new Python
+  process (about 0.15 s). Measure your setup with `claude-guard bench`.
 - **Audit streaming mode cannot block.** With `GUARD_STREAM_MODE=audit` responses reach the
   client before inspection; violations are only logged. `buffer` mode adds latency instead: no
   tokens are shown until generation finishes.

@@ -364,6 +364,23 @@ async def test_metrics_count_verdicts(client: httpx.AsyncClient, router: respx.M
     assert "claude_guard_requests_total 3" in text
 
 
+async def test_metrics_report_inspection_cache(
+    client: httpx.AsyncClient, router: respx.MockRouter
+) -> None:
+    router.post("/v1/messages").mock(
+        return_value=httpx.Response(200, json=message([{"type": "text", "text": "ok"}]))
+    )
+    body = load("request_injection_history")
+    await client.post("/v1/messages", json=body)
+    await client.post("/v1/messages", json=body)  # same conversation: every unit cached
+    text = (await client.get("/metrics")).text
+    units = len(body["messages"])  # type: ignore[arg-type]
+
+    assert f"claude_guard_inspection_cache_misses_total {units}" in text
+    assert f"claude_guard_inspection_cache_hits_total {units}" in text
+    assert f"claude_guard_inspection_cache_entries {units}" in text
+
+
 async def test_count_tokens_forwarded_without_blocking(
     client: httpx.AsyncClient, router: respx.MockRouter
 ) -> None:

@@ -44,6 +44,7 @@ from pydantic import JsonValue
 from starlette.background import BackgroundTask
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from claude_guard.cache import InspectionCache
 from claude_guard.config import Settings, get_settings
 from claude_guard.engine import GuardEngine
 from claude_guard.models import Action, Direction, Verdict
@@ -117,7 +118,7 @@ class Metrics:
         if verdict.error:
             self.counters["guard_errors_total"] += 1
 
-    def render(self) -> str:
+    def render(self, cache: InspectionCache | None = None) -> str:
         lines = [
             "# HELP claude_guard_verdicts_total Verdicts by direction and action.",
             "# TYPE claude_guard_verdicts_total counter",
@@ -139,6 +140,15 @@ class Metrics:
         ):
             lines.append(f"# TYPE claude_guard_{name} counter")
             lines.append(f"claude_guard_{name} {self.counters[name]}")
+        if cache is not None:
+            for name, value in (
+                ("inspection_cache_hits_total", cache.hits),
+                ("inspection_cache_misses_total", cache.misses),
+            ):
+                lines.append(f"# TYPE claude_guard_{name} counter")
+                lines.append(f"claude_guard_{name} {value}")
+            lines.append("# TYPE claude_guard_inspection_cache_entries gauge")
+            lines.append(f"claude_guard_inspection_cache_entries {len(cache)}")
         return "\n".join(lines) + "\n"
 
 
@@ -296,7 +306,9 @@ def create_app(
 
     @app.get("/metrics")
     async def metrics_endpoint() -> PlainTextResponse:
-        return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
+        return PlainTextResponse(
+            metrics.render(guard.cache), media_type="text/plain; version=0.0.4"
+        )
 
     @app.post("/v1/messages")
     async def messages(request: Request) -> Response:

@@ -3,7 +3,9 @@
 Scenarios (each measures the added latency only; no request reaches the real API except in
 `judge`):
 - `engine`: `GuardEngine.inspect` in process, heuristic detectors, per direction and payload
-  size. This is the floor of every integration.
+  size. This is the floor of every integration. Requests are measured twice: `first` (inspected
+  in full) and `next turn` (the previous request of the conversation was inspected before, so
+  the inspection cache holds all but the two newest messages, as in a running session).
 - `proxy`: HTTP round trips to a local fake Messages API, directly and through the proxy
   (uvicorn on loopback). The added latency is the difference between the n-th proxied and the
   n-th direct sample; both series run as blocks (alternating them puts the CPU in a different
@@ -247,7 +249,7 @@ def largest_file() -> str:
 def engine_cases() -> list[tuple[str, Direction, JsonObject]]:
     cases: list[tuple[str, Direction, JsonObject]] = [
         (
-            f"request {size} ({turns} tool turn{'s' if turns > 1 else ''})",
+            f"request {size} ({turns} tool turn{'s' if turns > 1 else ''}), first",
             Direction.REQUEST,
             conversation_request(turns),
         )
@@ -326,25 +328,31 @@ class Bench:
             notes=self._notes,
         )
 
-    def _collect[T](self, scenario: Scenario, measure: Callable[[], T]) -> list[T]:
+    def _collect[T](
+        self,
+        scenario: Scenario,
+        measure: Callable[[], T],
+        setup: Callable[[], object] | None = None,
+    ) -> list[T]:
         warmup = WARMUP[scenario.value]
         iterations = self._iterations or DEFAULT_ITERATIONS[scenario.value]
-        return _collect(measure, warmup, iterations, self._idle)
+        return _collect(measure, warmup, iterations, self._idle, setup)
 
-    def _engine(self) -> GuardEngine:
-        return GuardEngine(self._policy, self._settings, use_llm_judge=False)
-
-    def _proxy_app(self, settings: Settings) -> Starlette:
-        return create_app(settings, engine=self._engine())
+    def _engine(self, *, cache: bool) -> GuardEngine:
+        """cache=False: every request inspected in full; True: the configured cache."""
+        return GuardEngine(
+            self._policy, self._settings, use_llm_judge=False, cache_size=None if cache else 0
+        )
 
     # engine
 
     def engine(self) -> list[BenchResult]:
-        engine = self._engine()
+        cold = self._engine(cache=False)
+        warm = self._engine(cache=True)
         results = []
         with asyncio.Runner() as runner:
             for case, direction, payload in engine_cases():
-                inspect = partial(engine.inspect, direction, payload, source="bench")
+                inspect = partial(cold.inspect, direction, payload, source="bench")
                 samples = self._collect(Scenario.ENGINE, partial(_run_elapsed, runner, inspect))
                 results.append(
                     BenchResult(
@@ -354,7 +362,39 @@ class Bench:
                         added=LatencyStats.from_seconds(samples),
                     )
                 )
+            for size, turns in SIZES.items():
+                payload = conversation_request(turns)
+                previous = conversation_request(turns - 1)
+
+                def prime(previous: JsonObject = previous) -> None:
+                    if warm.cache is not None:
+                        warm.cache.clear()
+                    runner.run(warm.inspect(Direction.REQUEST, previous, source="bench"))
+
+                inspect = partial(warm.inspect, Direction.REQUEST, payload, source="bench")
+                samples = self._collect(
+                    Scenario.ENGINE, partial(_run_elapsed, runner, inspect), setup=prime
+                )
+                results.append(
+                    BenchResult(
+                        scenario=Scenario.ENGINE,
+                        case=f"request {size}, next turn",
+                        payload_bytes=payload_size(payload),
+                        added=LatencyStats.from_seconds(samples),
+                    )
+                )
+        self._cache_note()
         return results
+
+    def _cache_note(self) -> None:
+        note = (
+            "next turn: the previous request of the conversation was inspected first, so only "
+            "the newest assistant message and tool result are new (inspection cache)."
+        )
+        if self._settings.inspection_cache_size == 0:
+            note = "next turn: GUARD_INSPECTION_CACHE_SIZE=0, the cache is off."
+        if note not in self._notes:
+            self._notes.append(note)
 
     # proxy
 
@@ -363,23 +403,38 @@ class Bench:
         results = []
         with serve(upstream_app) as upstream_url:
             settings = self._settings.model_copy(update={"upstream_url": upstream_url})
-            buffer_app = self._proxy_app(settings.model_copy(update={"stream_mode": "buffer"}))
-            audit_app = self._proxy_app(settings.model_copy(update={"stream_mode": "audit"}))
+            buffer = settings.model_copy(update={"stream_mode": "buffer"})
+            audit = settings.model_copy(update={"stream_mode": "audit"})
+            session = self._engine(cache=True)
             with (
-                serve(buffer_app) as buffer_url,
-                serve(audit_app) as audit_url,
+                serve(create_app(buffer, engine=self._engine(cache=False))) as buffer_url,
+                serve(create_app(audit, engine=self._engine(cache=False))) as audit_url,
+                serve(create_app(buffer, engine=session)) as session_url,
                 httpx.Client(timeout=60, headers={"x-api-key": "bench"}) as client,
             ):
                 for size, turns in SIZES.items():
                     body = conversation_request(turns)
+                    previous = conversation_request(turns - 1)
+
+                    def prime(previous: JsonObject = previous) -> None:
+                        if session.cache is not None:
+                            session.cache.clear()
+                        _post(client, session_url, previous)
+
                     direct = self._collect(
                         Scenario.PROXY, partial(_post, client, upstream_url, body)
                     )
-                    proxied = self._collect(
-                        Scenario.PROXY, partial(_post, client, buffer_url, body)
+                    first = self._collect(Scenario.PROXY, partial(_post, client, buffer_url, body))
+                    following = self._collect(
+                        Scenario.PROXY, partial(_post, client, session_url, body), setup=prime
                     )
                     results.append(
-                        _proxy_result(f"non-streaming, request {size}", body, direct, proxied)
+                        _proxy_result(f"non-streaming, request {size}, first", body, direct, first)
+                    )
+                    results.append(
+                        _proxy_result(
+                            f"non-streaming, request {size}, next turn", body, direct, following
+                        )
                     )
 
                 body = conversation_request(SIZES[STREAM_SIZE], stream=True)
@@ -399,8 +454,10 @@ class Bench:
                         )
         self._notes.append(
             f"proxy: fake upstream streams {self._stream_events} text deltas every "
-            f"{self._event_interval * 1000:g} ms; LLM judge excluded (see --scenario judge)."
+            f"{self._event_interval * 1000:g} ms; streams and 'first' rows are inspected in full; "
+            "LLM judge excluded (see --scenario judge)."
         )
+        self._cache_note()
         return results
 
     # hooks
@@ -531,10 +588,19 @@ def hook_inputs(cwd: Path) -> dict[HookEvent, str]:
     }
 
 
-def _collect[T](measure: Callable[[], T], warmup: int, iterations: int, idle: float) -> list[T]:
-    """Call `measure` warmup + iterations times, pausing `idle` seconds before each call."""
+def _collect[T](
+    measure: Callable[[], T],
+    warmup: int,
+    iterations: int,
+    idle: float,
+    setup: Callable[[], object] | None = None,
+) -> list[T]:
+    """Call `measure` warmup + iterations times, after `setup` (not measured) and a pause of
+    `idle` seconds."""
     samples = []
     for i in range(warmup + iterations):
+        if setup is not None:
+            setup()
         if idle:
             time.sleep(idle)
         sample = measure()

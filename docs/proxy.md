@@ -242,11 +242,17 @@ claude_guard_guard_errors_total 0
 claude_guard_passthrough_blocked_total 0
 claude_guard_limit_exceeded_total 0
 claude_guard_unauthorized_total 0
+claude_guard_inspection_cache_hits_total 1260
+claude_guard_inspection_cache_misses_total 96
+claude_guard_inspection_cache_entries 96
 ```
 
 `verdicts_total` has a series for every direction/action pair. `guard_errors_total` counts
-verdicts that carry an engine error (fail mode applied). Counters are per process and reset on
-restart.
+verdicts that carry an engine error (fail mode applied). The `inspection_cache` series count
+request units (messages, tool definitions, system prompt) whose findings were reused or had to
+be computed, and the units cached now (see
+[architecture.md](architecture.md#inspection-cache)); they are absent with
+`GUARD_INSPECTION_CACHE_SIZE=0`. Counters are per process and reset on restart.
 
 ## Logging
 

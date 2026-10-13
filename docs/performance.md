@@ -26,7 +26,8 @@ Progress goes to stderr; the table or JSON to stdout. Each row reports the **add
 
 Payloads are synthetic Claude Code requests: a system prompt, eight tool definitions and *n*
 `Read` round trips whose results are claude-guard's own source files (realistic code, no
-secrets). Sizes: `small` 1 turn (12 KB), `medium` 10 turns (110 KB), `large` 50 turns (450 KB).
+secrets). Sizes: `small` 1 turn (12 KB), `medium` 10 turns (111 KB), `large` 50 turns (463 KB);
+they change slightly with the source tree.
 Files the shipped policy flags (detectors quote attack patterns) are left out, so every case
 takes the clean `allow` path that ordinary traffic takes.
 
@@ -36,6 +37,11 @@ Details of the method:
   directory: the real `logs/audit.jsonl` is not touched. Alerts are off.
 - **LLM judge.** Off in `engine`, `proxy` and `hooks` even if `policy.yaml` enables it; measure
   it separately with `-s judge` and add it to the request rows.
+- **Inspection cache.** Requests are measured twice. `first` is the first request of a
+  conversation, inspected in full (the engine runs without cache). `next turn` is a request
+  whose previous turn was inspected just before (the cache is cleared and the request without
+  its last two messages is inspected, unmeasured), as in a running session: only the newest
+  assistant message and tool result are new. Streams are inspected in full.
 - **Proxy.** The fake upstream answers immediately; streams send 20 text deltas 5 ms apart
   (about 110 ms of "generation"). The added latency is the difference between the *n*-th proxied
   and the *n*-th direct sample. Streams are measured for the `medium` request in both stream
@@ -52,39 +58,47 @@ Your numbers will differ; run the benchmark on the target machine.
 
 | Scenario | Case | Payload | p50 ms | p95 ms |
 |---|---|---|---:|---:|
-| engine | request small (1 tool turn) | 12 KB | 2.4 | 2.4 |
-| engine | request medium (10 tool turns) | 110 KB | 61 | 62 |
-| engine | request large (50 tool turns) | 450 KB | 266 | 269 |
+| engine | request small (1 tool turn), first | 12 KB | 2.6 | 2.8 |
+| engine | request medium (10 tool turns), first | 111 KB | 69 | 70 |
+| engine | request large (50 tool turns), first | 463 KB | 299 | 303 |
+| engine | request small, next turn | 12 KB | 0.3 | 0.3 |
+| engine | request medium, next turn | 111 KB | 3.7 | 4.3 |
+| engine | request large, next turn | 463 KB | 6.8 | 7.2 |
 | engine | response (text + tool_use) | 0.7 KB | 0.4 | 0.5 |
-| engine | tool_input (Bash) | 0.1 KB | 0.2 | 0.2 |
-| engine | tool_output (Read, 37 KB file) | 37 KB | 21 | 21 |
-| proxy | non-streaming, request small | 12 KB | 3.3 | 3.5 |
-| proxy | non-streaming, request medium | 110 KB | 64 | 65 |
-| proxy | non-streaming, request large | 450 KB | 275 | 276 |
-| proxy | stream `buffer`, first token | 110 KB | 196 | 198 |
-| proxy | stream `buffer`, total | 110 KB | 78 | 80 |
-| proxy | stream `audit`, first token | 110 KB | 75 | 77 |
-| proxy | stream `audit`, total | 110 KB | 76 | 80 |
-| hooks | `python -c pass` (interpreter floor) | | 11 | 22 |
-| hooks | PreToolUse, in process | 0.3 KB | 1.7 | 1.8 |
-| hooks | PreToolUse, venv script | 0.3 KB | 130 | 135 |
-| hooks | PreToolUse, `uv run` (as installed) | 0.3 KB | 145 | 146 |
-| hooks | PostToolUse, `uv run` (as installed) | 37 KB | 166 | 170 |
-| hooks | UserPromptSubmit, `uv run` (as installed) | 0.2 KB | 145 | 149 |
+| engine | tool_input (Bash) | 0.1 KB | 0.2 | 0.3 |
+| engine | tool_output (Read, 37 KB file) | 37 KB | 22 | 23 |
+| proxy | non-streaming, request small, first | 12 KB | 3.5 | 3.6 |
+| proxy | non-streaming, request small, next turn | 12 KB | 1.2 | 1.3 |
+| proxy | non-streaming, request medium, first | 111 KB | 68 | 69 |
+| proxy | non-streaming, request medium, next turn | 111 KB | 4.9 | 5.6 |
+| proxy | non-streaming, request large, first | 463 KB | 292 | 295 |
+| proxy | non-streaming, request large, next turn | 463 KB | 9.3 | 10.4 |
+| proxy | stream `buffer`, first token | 111 KB | 183 | 187 |
+| proxy | stream `buffer`, total | 111 KB | 75 | 79 |
+| proxy | stream `audit`, first token | 111 KB | 75 | 76 |
+| proxy | stream `audit`, total | 111 KB | 75 | 78 |
+| hooks | `python -c pass` (interpreter floor) | | 11 | 20 |
+| hooks | PreToolUse, in process | 0.3 KB | 1.9 | 2.0 |
+| hooks | PreToolUse, venv script | 0.3 KB | 132 | 135 |
+| hooks | PreToolUse, `uv run` (as installed) | 0.3 KB | 147 | 148 |
+| hooks | PostToolUse, `uv run` (as installed) | 37 KB | 170 | 175 |
+| hooks | UserPromptSubmit, `uv run` (as installed) | 0.2 KB | 147 | 149 |
 
 With `--idle-ms 500` (a pause before every call, as between real requests) CPU-bound work is
-slower because the CPU leaves its high-performance state while idle: the medium request goes
-from 64 to about 100 ms in the proxy, a small one from 3 to 14 ms, and hooks from about 145 to
-about 180 ms. Real traffic has such gaps (the model takes seconds to answer), so treat the idle
-numbers as the realistic ones on laptops and the default ones as a lower bound.
+slower because the CPU leaves its high-performance state while idle: in the proxy the medium
+request goes from 68 to about 92 ms (first) and from 5 to about 16 ms (next turn), a small one
+from 3.5 to 10 ms, and hooks from about 147 to about 180 ms. Real traffic has such gaps (the
+model takes seconds to answer), so treat the idle numbers as the realistic ones on laptops and
+the default ones as a lower bound.
 
 ## Reading the results
 
-- **Proxy cost grows with the context, about 0.6 ms per KB.** Each request carries the whole
-  conversation and the heuristics scan all of it, including history that was inspected before.
-  A long Claude Code session (hundreds of KB) adds a few hundred milliseconds per request, on top
-  of a model time to first token that is usually one to several seconds. The response side is
-  cheap (under 1 ms for a typical message).
+- **Proxy: the first request of a conversation pays for the whole context, about 0.6 ms per
+  KB; next turns pay for the new messages.** Each request carries the whole conversation, but
+  the inspection cache (`GUARD_INSPECTION_CACHE_SIZE`) keeps the findings of every message,
+  tool definition and system prompt already inspected. With 463 KB of context a next turn adds
+  9 ms instead of 292 ms. What remains grows slowly with the context: extracting the segments
+  and hashing them. The response side is cheap (under 1 ms for a typical message).
 - **`buffer` streaming delays the first token by the whole generation time**, plus inspection.
   In the table the fake generation takes about 110 ms; with a real model it is the full response
   time (seconds). `audit` mode only adds the request inspection to the first token.

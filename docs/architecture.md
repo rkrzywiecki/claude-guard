@@ -32,12 +32,14 @@ flowchart LR
 | `config.py` | `Settings` (env `GUARD_*`, `.env`), `Policy` models, `load_policy()` |
 | `payload.py` | Extracts text segments from payloads and writes redactions back by location |
 | `engine.py` | `GuardEngine`: runs detectors, judge, history cap, fail mode, audit |
+| `cache.py` | `InspectionCache`: findings per request unit (message, tool definition, system prompt), reused on later requests |
 | `detectors/` | `secrets`, `injection`, `commands`, `exfiltration` (heuristics), `custom` (`custom_rules` from the policy), `tools` (per-tool allow/deny/warn) and `llm_judge` |
 | `detectors/obfuscation.py` | Shared normalization (invisible characters, homoglyphs, leetspeak, spacing) and base64/hex/percent decoding |
 | `audit.py` | Appends one redacted JSON line per inspection |
 | `proxy/` | FastAPI proxy (`/v1/messages`, `count_tokens`, Message Batches, `/healthz`, `/metrics`, passthrough policy), SSE streaming modes, listen/TLS options for `serve` (`server.py`) |
 | `hooks/` | Claude Code hook event handlers |
-| `cli.py` | Typer CLI: `serve`, `scan`, `hook`, `install-hooks`, `report` |
+| `cli.py` | Typer CLI: `serve`, `scan`, `hook`, `install-hooks`, `report`, `bench` |
+| `bench.py` | Latency benchmark (`claude-guard bench`, see [performance.md](performance.md)) |
 
 ## Payloads and directions
 
@@ -72,7 +74,8 @@ Content block handling:
 
 1. Extract segments. A malformed payload is an engine error.
 2. Run the heuristic detectors concurrently (`asyncio.gather`). A detector exception is recorded
-   as an engine error; other detectors' findings are kept.
+   as an engine error; other detectors' findings are kept. For requests, units already in the
+   inspection cache are skipped and their cached findings used (see below).
 3. If `llm_judge.enabled` (and the caller allows it, e.g. `GUARD_HOOK_LLM` for hooks) and
    `needs_judgement()` is true, run the judge on the **current turn only**.
 4. **History cap** (requests only): findings located in messages before the last assistant
@@ -86,6 +89,27 @@ Content block handling:
 `GuardEngine.redact(payload, verdict)` returns a copy of the payload where each `redact`
 finding's span is replaced with `[REDACTED:<rule>]`, right to left per string so offsets stay
 valid. The original payload is never modified.
+
+### Inspection cache
+
+A request carries the whole conversation, so without a cache every message would be inspected
+again on every turn and the proxy's cost would grow with the session (about 0.6 ms per KB, see
+[performance.md](performance.md)). The engine therefore splits a request into **units**: each
+message (`messages[i]`), each tool definition (`tools[i]`) and the system prompt. The heuristic
+detectors never look across units (phrases split across content blocks are matched within one
+message), so a unit's findings depend only on its own extracted segments and tool calls.
+
+- **Key:** SHA-256 of the unit's extracted segments and tool calls (text, location including
+  the message index, role, trust, tool name and field). Extraction always runs; only detection
+  is skipped. Any change to a unit, or the same text at another index, is a different key.
+- **Value:** the raw findings of the detectors, before the history cap, which is applied on
+  every request as usual. Excerpts are masked as everywhere; the inspected text is not stored.
+- **Not cached:** units of a request where a detector failed, findings that cannot be
+  attributed to one unit, other directions (responses, tool input and output), and the LLM
+  judge (it only sees the current turn anyway).
+- **Scope:** in memory, per engine (one policy), LRU with `GUARD_INSPECTION_CACHE_SIZE` entries
+  (default 10,000; `0` disables it). Shared across sessions: identical units give identical
+  findings. Hooks gain nothing from it (a new process per event).
 
 ## Audit log
 

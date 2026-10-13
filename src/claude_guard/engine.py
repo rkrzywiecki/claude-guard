@@ -12,6 +12,10 @@ Conversation history: a request carries the whole conversation, so content that 
 when it was new comes back on every later request. Findings located before the last assistant
 message are therefore capped at `warn`, except secrets, which keep `redact` so the same value is
 consistently masked. Without this, one old tool result would block every following request.
+
+Requests are inspected unit by unit (message, tool definition, system prompt) through an
+`InspectionCache` (`GUARD_INSPECTION_CACHE_SIZE`): units seen on an earlier request reuse their
+findings, so a growing conversation only costs the new messages. The LLM judge is not cached.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import structlog
 
 from claude_guard.alerts import Alerter
 from claude_guard.audit import AuditLog
+from claude_guard.cache import InspectionCache, inspection_unit, unit_key
 from claude_guard.config import Policy, Settings, get_settings, load_policy, protected_paths
 from claude_guard.detectors.base import Detector
 from claude_guard.detectors.commands import CommandsDetector
@@ -39,6 +44,8 @@ from claude_guard.models import (
     Direction,
     Finding,
     InspectionContext,
+    TextSegment,
+    ToolCall,
     Verdict,
 )
 from claude_guard.payload import Extraction, JsonObject, apply_redactions, extract
@@ -61,6 +68,7 @@ class GuardEngine:
         use_llm_judge: bool = True,
         audit: AuditLog | None = None,
         alerter: Alerter | None = None,
+        cache_size: int | None = None,
     ) -> None:
         self._policy = policy
         self._settings = settings
@@ -80,6 +88,8 @@ class GuardEngine:
         self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
         self._scanner = SecretScanner(policy.secrets, masking_rules(policy))
         self._alerter = alerter
+        size = settings.inspection_cache_size if cache_size is None else cache_size
+        self._cache = InspectionCache(size) if size > 0 else None
         self._audit = audit or AuditLog(
             settings.audit_path,
             self._scanner,
@@ -106,6 +116,11 @@ class GuardEngine:
     @property
     def policy(self) -> Policy:
         return self._policy
+
+    @property
+    def cache(self) -> InspectionCache | None:
+        """Findings of request units already inspected (None when disabled)."""
+        return self._cache
 
     @property
     def scanner(self) -> SecretScanner:
@@ -177,21 +192,10 @@ class GuardEngine:
             tool_calls=tuple(extraction.tool_calls),
         )
 
-        results = await asyncio.gather(
-            *(detector.detect(ctx) for detector in self._detectors), return_exceptions=True
-        )
-        findings: list[Finding] = []
-        errors: list[str] = []
-        for detector, result in zip(self._detectors, results, strict=True):
-            if isinstance(result, BaseException):
-                if not isinstance(result, Exception):
-                    raise result
-                log.error(
-                    "detector_failed", detector=detector.name, error_type=type(result).__name__
-                )
-                errors.append(f"{detector.name}: {type(result).__name__}: {result}")
-            else:
-                findings.extend(result)
+        if direction is Direction.REQUEST and self._cache is not None:
+            findings, errors = await self._detect_cached(ctx, self._cache)
+        else:
+            findings, errors = await self._detect(ctx)
 
         if self._use_llm_judge:
             judge_ctx = self._judge_context(ctx, extraction)
@@ -207,6 +211,77 @@ class GuardEngine:
         if errors:
             verdict = self._apply_fail_mode(verdict, "; ".join(errors))
         return verdict
+
+    async def _detect(self, ctx: InspectionContext) -> tuple[list[Finding], list[str]]:
+        """Run the heuristic detectors concurrently; returns (findings, errors)."""
+        results = await asyncio.gather(
+            *(detector.detect(ctx) for detector in self._detectors), return_exceptions=True
+        )
+        findings: list[Finding] = []
+        errors: list[str] = []
+        for detector, result in zip(self._detectors, results, strict=True):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception):
+                    raise result
+                log.error(
+                    "detector_failed", detector=detector.name, error_type=type(result).__name__
+                )
+                errors.append(f"{detector.name}: {type(result).__name__}: {result}")
+            else:
+                findings.extend(result)
+        return findings, errors
+
+    async def _detect_cached(
+        self, ctx: InspectionContext, cache: InspectionCache
+    ) -> tuple[list[Finding], list[str]]:
+        """`_detect` on the units not in the cache; findings come back in payload order."""
+        items: list[TextSegment | ToolCall] = [*ctx.segments, *ctx.tool_calls]
+        units: dict[str, list[TextSegment | ToolCall]] = {}
+        for item in items:
+            units.setdefault(inspection_unit(item.location), []).append(item)
+
+        findings: list[Finding] = []
+        pending: dict[str, str] = {}  # unit -> key
+        for unit, members in units.items():
+            key = unit_key(members)
+            cached = cache.get(key)
+            if cached is None:
+                pending[unit] = key
+            else:
+                findings.extend(cached)
+
+        errors: list[str] = []
+        if pending:
+            fresh, errors = await self._detect(
+                ctx.model_copy(
+                    update={
+                        "segments": tuple(
+                            s for s in ctx.segments if inspection_unit(s.location) in pending
+                        ),
+                        "tool_calls": tuple(
+                            c for c in ctx.tool_calls if inspection_unit(c.location) in pending
+                        ),
+                    }
+                )
+            )
+            findings.extend(fresh)
+            if not errors:
+                self._store(cache, pending, fresh)
+
+        order = {unit: index for index, unit in enumerate(units)}
+        findings.sort(key=lambda f: order.get(inspection_unit(f.location or ""), len(order)))
+        return findings, errors
+
+    @staticmethod
+    def _store(cache: InspectionCache, pending: dict[str, str], findings: list[Finding]) -> None:
+        by_unit: dict[str, list[Finding]] = {unit: [] for unit in pending}
+        for finding in findings:
+            unit = inspection_unit(finding.location) if finding.location else None
+            if unit not in by_unit:
+                return  # not attributable to one unit: keep nothing rather than lose it
+            by_unit[unit].append(finding)
+        for unit, key in pending.items():
+            cache.put(key, by_unit[unit])
 
     def _judge_detector(self) -> Detector:
         if self._judge is None:

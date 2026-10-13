@@ -70,8 +70,9 @@ async def test_payloads_take_the_clean_path(settings: Settings) -> None:
 
 def test_engine_scenario(settings: Settings, quick: None) -> None:
     report = run_bench(settings, [Scenario.ENGINE], iterations=2)
-    assert [r.case for r in report.results][-1] == "tool_output (Read, largest file)"
-    assert len(report.results) == 2 + 3
+    assert report.results[4].case == "tool_output (Read, largest file)"
+    assert len(report.results) == 2 + 3 + 2
+    assert report.results[-1].case == "request medium, next turn"
     assert all(r.added.samples == 2 and r.added.p50_ms > 0 for r in report.results)
     assert not settings.audit_path.exists()  # the real audit log is left alone
 
@@ -80,8 +81,10 @@ def test_proxy_scenario(settings: Settings, quick: None) -> None:
     report = run_bench(settings, [Scenario.PROXY], iterations=2)
     cases = {r.case: r for r in report.results}
     assert set(cases) == {
-        "non-streaming, request small",
-        "non-streaming, request medium",
+        "non-streaming, request small, first",
+        "non-streaming, request small, next turn",
+        "non-streaming, request medium, first",
+        "non-streaming, request medium, next turn",
         "stream buffer, first token (request small)",
         "stream buffer, total (request small)",
         "stream audit, first token (request small)",
@@ -151,7 +154,7 @@ def test_idle_pauses_before_each_call(
     pauses: list[float] = []
     monkeypatch.setattr(bench.time, "sleep", pauses.append)
     run_bench(settings, [Scenario.ENGINE], iterations=2, idle=0.05)
-    assert pauses == [0.05] * 2 * 5
+    assert pauses == [0.05] * 2 * 7
 
 
 # --- CLI ----------------------------------------------------------------------------

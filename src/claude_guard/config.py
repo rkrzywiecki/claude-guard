@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # Shared secret clients send in the x-claude-guard-token header; required when set.
     proxy_token: SecretStr | None = None
     hook_llm: bool = False
+    # Request units (messages, tool definitions, system prompt) whose findings are kept for later
+    # requests of the same conversation; 0 disables the cache.
+    inspection_cache_size: int = Field(default=10_000, ge=0)
     audit_path: Path = Path("logs/audit.jsonl")
     # Rotate the audit log at this size (0 disables rotation), keeping this many old files.
     audit_max_bytes: int = Field(default=10 * 1024 * 1024, ge=0)
