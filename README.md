@@ -239,36 +239,37 @@ tool round trips.
 
 | Integration | Case | Payload | Added, hot (p50) | Added, after idle (p50) |
 |---|---|---:|---:|---:|
-| Proxy | Request, 1 tool turn, first of the conversation | 12 KB | 3.5 ms | 10 ms |
-| Proxy | Request, 1 tool turn, next turn | 12 KB | 1.2 ms | 5 ms |
-| Proxy | Request, 10 tool turns, first of the conversation | 111 KB | 68 ms | 92 ms |
-| Proxy | Request, 10 tool turns, next turn | 111 KB | 4.9 ms | 16 ms |
-| Proxy | Request, 50 tool turns, first of the conversation | 463 KB | 292 ms | 321 ms |
-| Proxy | Request, 50 tool turns, next turn | 463 KB | 9.3 ms | 22 ms |
-| Proxy | Stream `audit`, first token (10 turns, inspected in full) | 111 KB | 75 ms | 86 ms |
-| Proxy | Stream `buffer`, first token (10 turns, inspected in full) | 111 KB | 183 ms | 194 ms |
-| Engine | Response (text + tool_use) | 0.7 KB | 0.4 ms | 2.7 ms |
-| Engine | Tool input (Bash) | 0.1 KB | 0.2 ms | 1.8 ms |
-| Engine | Tool output (37 KB file) | 37 KB | 22 ms | 52 ms |
-| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 147 ms | 181 ms |
-| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 170 ms | 222 ms |
-| Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.9 ms | 9 ms |
-| Hooks | `python -c pass` (interpreter floor) | | 11 ms | 36 ms |
+| Proxy | Request, 1 tool turn, first of the conversation | 12 KB | 3.4 ms | 11 ms |
+| Proxy | Request, 1 tool turn, next turn (0.1 KB new) | 12 KB | 1.2 ms | 4.8 ms |
+| Proxy | Request, 10 tool turns, first of the conversation | 122 KB | 73 ms | 111 ms |
+| Proxy | Request, 10 tool turns, next turn (35 KB new) | 122 KB | 23 ms | 53 ms |
+| Proxy | Request, 50 tool turns, first of the conversation | 461 KB | 282 ms | 310 ms |
+| Proxy | Request, 50 tool turns, next turn (5 KB new) | 461 KB | 6.7 ms | 19 ms |
+| Proxy | Stream `audit`, first token (10 turns, inspected in full) | 122 KB | 82 ms | 110 ms |
+| Proxy | Stream `buffer`, first token (10 turns, inspected in full) | 122 KB | 190 ms | 219 ms |
+| Engine | Response (text + tool_use) | 0.7 KB | 0.4 ms | 2.5 ms |
+| Engine | Tool input (Bash) | 0.1 KB | 0.2 ms | 1.3 ms |
+| Engine | Tool output (37 KB file) | 37 KB | 21 ms | 51 ms |
+| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 144 ms | 187 ms |
+| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 167 ms | 206 ms |
+| Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.8 ms | 8.6 ms |
+| Hooks | `python -c pass` (interpreter floor) | | 11 ms | 35 ms |
 
 "Next turn" is how a running session looks: the previous request of the conversation went
-through the proxy, so only the newest assistant message and tool result are new. The `buffer`
-row includes the fake upstream's 110 ms of simulated generation: with a real model the first
-token waits for the whole response.
+through the proxy, so only the newest assistant message and tool result are new; "new" is the
+size of that tool result. The `buffer` row includes the fake upstream's 110 ms of simulated
+generation: with a real model the first token waits for the whole response.
 
 ### Conclusions
 
 - **Proxy: within a session only new messages cost.** The first request of a conversation is
-  scanned in full, about 0.6 ms per KB (68 ms for 111 KB, 292 ms for 463 KB). Every request
+  scanned in full, about 0.6 ms per KB (73 ms for 122 KB, 282 ms for 461 KB). Every request
   carries the whole conversation, but the inspection cache keeps the findings of each message,
-  tool definition and system prompt already seen, so a next turn costs a few milliseconds even
-  with 463 KB of context (9 ms, about 30 times less). What remains is extracting and hashing the
-  payload, which grows slowly with the context. A restarted proxy, a compacted conversation or
-  an evicted entry fall back to a full inspection of the affected messages.
+  tool definition and system prompt already seen, so a next turn pays for its new messages at
+  about the same rate: 23 ms for a 35 KB tool result, 7 ms for a 5 KB one on top of 461 KB of
+  context (about 40 times less than the first request). Extracting and hashing the rest of the
+  payload adds a little that grows slowly with the context. A restarted proxy, a compacted
+  conversation or an evicted entry fall back to a full inspection of the affected messages.
 - **Responses and tool calls are cheap.** Inspecting a response or a Bash command takes well
   under a millisecond hot, a few milliseconds after idle.
 - **Streaming: choose between latency and blocking.** `audit` mode only delays the first token by
@@ -276,7 +277,7 @@ token waits for the whole response.
   inspected, so the user sees nothing for the full generation time.
 - **Hooks: about 0.15 s per event, almost all of it process start-up.** The inspection itself
   takes about 2 ms for a tool call; `uv run` adds about 15 ms; the rest is starting Python and
-  importing modules (about 110 ms). A session with 50 tool calls spends about 15 s in
+  importing modules (about 100 ms). A session with 50 tool calls spends about 15 s in
   `PreToolUse` and `PostToolUse` hooks. The Anthropic SDK used to be imported by every hook
   (about 240 ms, 0.4 s per hook in total); it is now loaded only when the judge runs.
 - **The LLM judge is an extra model round trip** per judged payload (hundreds of milliseconds to
