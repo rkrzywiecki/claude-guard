@@ -228,14 +228,55 @@ uv run claude-guard bench -s judge       # real LLM judge calls (costs tokens)
 
 `bench` reports the latency claude-guard adds (p50/p95/p99) on your machine with your
 `policy.yaml`, using a local fake Messages API, so nothing reaches the real API except in the
-`judge` scenario. Reference results on an Apple M5 Pro (p50):
+`judge` scenario. The LLM judge is excluded from the other scenarios.
 
-| Where | Added latency |
-|---|---|
-| Proxy, request with 12 KB / 110 KB / 450 KB of context | 3 ms / 64 ms / 275 ms |
-| Proxy, streamed response | `audit`: request inspection only; `buffer`: first token waits for the whole response |
-| Hook per event (`uv run`, as installed) | about 400 ms, mostly Python start-up and imports |
-| LLM judge (when enabled) | one model call per judged payload |
+### Results
+
+Apple M5 Pro, macOS, Python 3.12, shipped `policy.yaml`. "Hot" is the default run; "after idle"
+adds `--idle-ms 500`, a pause before every call as between real requests, which lets the CPU
+leave its high-performance state. Payloads are Claude Code-like conversations with *n* `Read`
+tool round trips.
+
+| Integration | Case | Payload | Added, hot (p50) | Added, after idle (p50) |
+|---|---|---:|---:|---:|
+| Proxy | Request, 1 tool turn | 12 KB | 3 ms | 14 ms |
+| Proxy | Request, 10 tool turns | 110 KB | 64 ms | 100 ms |
+| Proxy | Request, 50 tool turns | 450 KB | 275 ms | 299 ms |
+| Proxy | Stream `audit`, first token (10 turns) | 110 KB | 75 ms | 101 ms |
+| Proxy | Stream `buffer`, first token (10 turns) | 110 KB | 196 ms | 209 ms |
+| Engine | Response (text + tool_use) | 0.7 KB | 0.4 ms | 2.7 ms |
+| Engine | Tool input (Bash) | 0.1 KB | 0.2 ms | 1.8 ms |
+| Engine | Tool output (37 KB file) | 37 KB | 21 ms | 52 ms |
+| Hooks | `PreToolUse`, `uv run` as installed | 0.3 KB | 397 ms | 437 ms |
+| Hooks | `PostToolUse`, `uv run` as installed | 37 KB | 418 ms | 469 ms |
+| Hooks | `PreToolUse`, in process (no start-up) | 0.3 KB | 1.7 ms | 9 ms |
+| Hooks | `python -c pass` (interpreter floor) | | 11 ms | 36 ms |
+
+The `buffer` row includes the fake upstream's 110 ms of simulated generation: with a real model
+the first token waits for the whole response.
+
+### Conclusions
+
+- **Proxy: the cost grows with the context, about 0.6 ms per KB.** Every request carries the
+  whole conversation and all of it is scanned again, including history inspected on earlier
+  requests. Short sessions add a few milliseconds; a long Claude Code session (hundreds of KB)
+  adds 0.1 to 0.3 s per request. That is small next to a model's time to first token (usually
+  one to several seconds), but it is paid on every turn.
+- **Responses and tool calls are cheap.** Inspecting a response or a Bash command takes well
+  under a millisecond hot, a few milliseconds after idle.
+- **Streaming: choose between latency and blocking.** `audit` mode only delays the first token by
+  the request inspection; `buffer` mode holds every token until the response is complete and
+  inspected, so the user sees nothing for the full generation time.
+- **Hooks: about 0.4 s per event, almost all of it process start-up.** The inspection itself takes
+  about 2 ms for a tool call; `uv run` adds about 15 ms; the rest is importing Python modules,
+  mostly the Anthropic SDK (about 240 ms of the 340 ms import time), which hooks only need with
+  `GUARD_HOOK_LLM=true`. A session with 50 tool calls spends about 40 s in `PreToolUse` and
+  `PostToolUse` hooks.
+- **The LLM judge is an extra model round trip** per judged payload (hundreds of milliseconds to
+  seconds, depending on the model); measure it with `-s judge`.
+- **Possible improvements:** import the Anthropic SDK lazily, only when the judge runs (roughly
+  halves hook latency), and cache verdicts of history already inspected (removes most of the
+  proxy's per-KB cost in long sessions).
 
 Method, full results and how to read them: [docs/performance.md](docs/performance.md).
 
