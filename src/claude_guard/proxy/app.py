@@ -23,6 +23,9 @@ Other endpoints:
   are forwarded as is; any other `/v1/*` endpoint (e.g. Files API uploads) follows
   `GUARD_PASSTHROUGH`: `block` (default) answers 403, `allow` forwards it uninspected.
 
+`policy.yaml` is reloaded when it changes (checked at most every `GUARD_POLICY_RELOAD_INTERVAL`
+seconds, on requests) or on SIGHUP; an invalid file keeps the running policy.
+
 Credential headers are forwarded but never logged.
 """
 
@@ -32,6 +35,7 @@ import asyncio
 import json
 import re
 import secrets
+import signal
 from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -49,6 +53,7 @@ from claude_guard.config import Settings, get_settings
 from claude_guard.engine import GuardEngine
 from claude_guard.models import Action, Direction, Verdict
 from claude_guard.payload import JsonObject
+from claude_guard.policy_reload import PolicyReloader
 from claude_guard.proxy.streaming import (
     PING_EVENT,
     MessageAccumulator,
@@ -118,7 +123,9 @@ class Metrics:
         if verdict.error:
             self.counters["guard_errors_total"] += 1
 
-    def render(self, cache: InspectionCache | None = None) -> str:
+    def render(
+        self, cache: InspectionCache | None = None, reloader: PolicyReloader | None = None
+    ) -> str:
         lines = [
             "# HELP claude_guard_verdicts_total Verdicts by direction and action.",
             "# TYPE claude_guard_verdicts_total counter",
@@ -149,6 +156,13 @@ class Metrics:
                 lines.append(f"claude_guard_{name} {value}")
             lines.append("# TYPE claude_guard_inspection_cache_entries gauge")
             lines.append(f"claude_guard_inspection_cache_entries {len(cache)}")
+        if reloader is not None:
+            for name, value in (
+                ("policy_reloads_total", reloader.reloads),
+                ("policy_reload_errors_total", reloader.errors),
+            ):
+                lines.append(f"# TYPE claude_guard_{name} counter")
+                lines.append(f"claude_guard_{name} {value}")
         return "\n".join(lines) + "\n"
 
 
@@ -185,6 +199,19 @@ class TokenMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+        await self._app(scope, receive, send)
+
+
+class PolicyReloadMiddleware:
+    """Lets the reloader look for a changed policy file before each request is handled."""
+
+    def __init__(self, app: ASGIApp, reloader: PolicyReloader) -> None:
+        self._app = app
+        self._reloader = reloader
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            self._reloader.check()
         await self._app(scope, receive, send)
 
 
@@ -281,33 +308,45 @@ def create_app(
         base_url=settings.upstream_url, timeout=settings.upstream_timeout
     )
     metrics = Metrics()
+    reloader = PolicyReloader(guard, settings.policy_path, interval=settings.policy_reload_interval)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGHUP, reloader.reload)
+            on_sighup = True
+        except (NotImplementedError, RuntimeError, ValueError, AttributeError):
+            on_sighup = False  # not the main thread (tests, benchmark) or no SIGHUP (Windows)
         yield
+        if on_sighup:
+            loop.remove_signal_handler(signal.SIGHUP)
         await guard.flush_alerts()
         if owns_client:
             await client.aclose()
 
     app = FastAPI(title="claude-guard", lifespan=lifespan)
-    # Added last runs first: the token is checked before any body is read.
+    # Added last runs first: the token is checked before any body is read, and the policy file
+    # is checked just before the handler.
+    app.add_middleware(PolicyReloadMiddleware, reloader=reloader)
     app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes, metrics=metrics)
     token = settings.proxy_token.get_secret_value() if settings.proxy_token else ""
     if token:
         app.add_middleware(TokenMiddleware, token=token, metrics=metrics)
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
+    async def healthz() -> dict[str, str | None]:
         return {
             "status": "ok",
             "stream_mode": settings.stream_mode,
             "fail_mode": settings.fail_mode,
+            "policy_version": reloader.version,
         }
 
     @app.get("/metrics")
     async def metrics_endpoint() -> PlainTextResponse:
         return PlainTextResponse(
-            metrics.render(guard.cache), media_type="text/plain; version=0.0.4"
+            metrics.render(guard.cache, reloader), media_type="text/plain; version=0.0.4"
         )
 
     @app.post("/v1/messages")

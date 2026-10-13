@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import structlog
 
@@ -55,6 +56,19 @@ log = structlog.get_logger(__name__)
 HISTORY_CAPPED_ACTIONS = frozenset({Action.BLOCK, Action.REDACT})
 
 
+@dataclass
+class _PolicyState:
+    """Everything derived from one policy. `reload_policy` swaps it as a whole; an inspection
+    reads it once, so it never mixes two policies."""
+
+    policy: Policy
+    detectors: tuple[Detector, ...]
+    scanner: SecretScanner
+    cache: InspectionCache | None
+    use_llm_judge: bool
+    judge: Detector | None  # created on first use
+
+
 class GuardEngine:
     """Inspects payloads in any direction using one shared set of detectors."""
 
@@ -70,32 +84,45 @@ class GuardEngine:
         alerter: Alerter | None = None,
         cache_size: int | None = None,
     ) -> None:
-        self._policy = policy
         self._settings = settings
-        self._detectors: tuple[Detector, ...] = tuple(
-            detectors
-            if detectors is not None
-            else (
-                SecretsDetector(policy),
-                InjectionDetector(policy),
-                CommandsDetector(policy, protected_paths(settings)),
-                ExfiltrationDetector(policy),
-                CustomRulesDetector(policy),
-                ToolPolicyDetector(policy),
-            )
-        )
-        self._judge = judge
-        self._use_llm_judge = use_llm_judge and policy.llm_judge.enabled
-        self._scanner = SecretScanner(policy.secrets, masking_rules(policy))
+        # Injected doubles (tests) survive a policy reload; the built-in set is rebuilt.
+        self._fixed_detectors = tuple(detectors) if detectors is not None else None
+        self._fixed_judge = judge
+        self._allow_llm_judge = use_llm_judge
+        self._cache_size = settings.inspection_cache_size if cache_size is None else cache_size
+        self._state = self._build_state(policy)
         self._alerter = alerter
-        size = settings.inspection_cache_size if cache_size is None else cache_size
-        self._cache = InspectionCache(size) if size > 0 else None
         self._audit = audit or AuditLog(
             settings.audit_path,
-            self._scanner,
+            self._state.scanner,
             max_bytes=settings.audit_max_bytes,
             backups=settings.audit_backups,
         )
+
+    def _build_state(self, policy: Policy) -> _PolicyState:
+        detectors = self._fixed_detectors or (
+            SecretsDetector(policy),
+            InjectionDetector(policy),
+            CommandsDetector(policy, protected_paths(self._settings)),
+            ExfiltrationDetector(policy),
+            CustomRulesDetector(policy),
+            ToolPolicyDetector(policy),
+        )
+        return _PolicyState(
+            policy=policy,
+            detectors=detectors,
+            scanner=SecretScanner(policy.secrets, masking_rules(policy)),
+            cache=InspectionCache(self._cache_size) if self._cache_size > 0 else None,
+            use_llm_judge=self._allow_llm_judge and policy.llm_judge.enabled,
+            judge=self._fixed_judge,
+        )
+
+    def reload_policy(self, policy: Policy) -> None:
+        """Switch to `policy`. Inspections already running finish with the previous one; the
+        inspection cache starts empty, since findings depend on the policy."""
+        state = self._build_state(policy)
+        self._audit.scanner = state.scanner
+        self._state = state
 
     @classmethod
     def from_settings(
@@ -115,17 +142,17 @@ class GuardEngine:
 
     @property
     def policy(self) -> Policy:
-        return self._policy
+        return self._state.policy
 
     @property
     def cache(self) -> InspectionCache | None:
         """Findings of request units already inspected (None when disabled)."""
-        return self._cache
+        return self._state.cache
 
     @property
     def scanner(self) -> SecretScanner:
         """Masks built-in and custom secrets in outward-facing text."""
-        return self._scanner
+        return self._state.scanner
 
     async def inspect(
         self,
@@ -164,11 +191,11 @@ class GuardEngine:
         Reasons are mostly rule descriptions, but LLM judge explanations and error messages can
         quote the inspected content.
         """
-        return self._scanner.mask(verdict.reason)
+        return self._state.scanner.mask(verdict.reason)
 
     def mask(self, text: str) -> str:
         """Mask secrets in arbitrary outward-facing text."""
-        return self._scanner.mask(text)
+        return self._state.scanner.mask(text)
 
     def redact(self, payload: JsonObject, verdict: Verdict) -> JsonObject:
         """Return a copy of `payload` with every `redact` finding's span replaced."""
@@ -177,6 +204,7 @@ class GuardEngine:
     async def _inspect(
         self, direction: Direction, payload: JsonObject, session_id: str | None
     ) -> Verdict:
+        state = self._state
         extraction = extract(direction, payload)
         tool_name = payload.get("tool_name") if direction is Direction.TOOL_INPUT else None
         tool_input = payload.get("tool_input") if direction is Direction.TOOL_INPUT else None
@@ -192,17 +220,17 @@ class GuardEngine:
             tool_calls=tuple(extraction.tool_calls),
         )
 
-        if direction is Direction.REQUEST and self._cache is not None:
-            findings, errors = await self._detect_cached(ctx, self._cache)
+        if direction is Direction.REQUEST and state.cache is not None:
+            findings, errors = await self._detect_cached(ctx, state.detectors, state.cache)
         else:
-            findings, errors = await self._detect(ctx)
+            findings, errors = await self._detect(ctx, state.detectors)
 
-        if self._use_llm_judge:
+        if state.use_llm_judge:
             judge_ctx = self._judge_context(ctx, extraction)
             if needs_judgement(
-                self._policy, findings, untrusted_content=bool(judge_ctx.untrusted_segments)
+                state.policy, findings, untrusted_content=bool(judge_ctx.untrusted_segments)
             ):
-                findings.extend(await self._judge_detector().detect(judge_ctx))
+                findings.extend(await self._judge_detector(state).detect(judge_ctx))
 
         if direction is Direction.REQUEST:
             findings = [self._cap_history(finding, extraction) for finding in findings]
@@ -212,14 +240,17 @@ class GuardEngine:
             verdict = self._apply_fail_mode(verdict, "; ".join(errors))
         return verdict
 
-    async def _detect(self, ctx: InspectionContext) -> tuple[list[Finding], list[str]]:
+    @staticmethod
+    async def _detect(
+        ctx: InspectionContext, detectors: Sequence[Detector]
+    ) -> tuple[list[Finding], list[str]]:
         """Run the heuristic detectors concurrently; returns (findings, errors)."""
         results = await asyncio.gather(
-            *(detector.detect(ctx) for detector in self._detectors), return_exceptions=True
+            *(detector.detect(ctx) for detector in detectors), return_exceptions=True
         )
         findings: list[Finding] = []
         errors: list[str] = []
-        for detector, result in zip(self._detectors, results, strict=True):
+        for detector, result in zip(detectors, results, strict=True):
             if isinstance(result, BaseException):
                 if not isinstance(result, Exception):
                     raise result
@@ -232,7 +263,7 @@ class GuardEngine:
         return findings, errors
 
     async def _detect_cached(
-        self, ctx: InspectionContext, cache: InspectionCache
+        self, ctx: InspectionContext, detectors: Sequence[Detector], cache: InspectionCache
     ) -> tuple[list[Finding], list[str]]:
         """`_detect` on the units not in the cache; findings come back in payload order."""
         items: list[TextSegment | ToolCall] = [*ctx.segments, *ctx.tool_calls]
@@ -262,7 +293,8 @@ class GuardEngine:
                             c for c in ctx.tool_calls if inspection_unit(c.location) in pending
                         ),
                     }
-                )
+                ),
+                detectors,
             )
             findings.extend(fresh)
             if not errors:
@@ -283,10 +315,10 @@ class GuardEngine:
         for unit, key in pending.items():
             cache.put(key, by_unit[unit])
 
-    def _judge_detector(self) -> Detector:
-        if self._judge is None:
-            self._judge = LlmJudgeDetector(self._policy, self._settings)
-        return self._judge
+    def _judge_detector(self, state: _PolicyState) -> Detector:
+        if state.judge is None:
+            state.judge = LlmJudgeDetector(state.policy, self._settings)
+        return state.judge
 
     @staticmethod
     def _judge_context(ctx: InspectionContext, extraction: Extraction) -> InspectionContext:

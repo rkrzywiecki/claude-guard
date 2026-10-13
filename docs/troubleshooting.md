@@ -10,6 +10,13 @@ Install uv (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and open a new sh
 `GUARD_POLICY_PATH` is relative to the current directory. Run from the claude-guard directory or
 set an absolute path, e.g. `GUARD_POLICY_PATH=/path/to/claude-guard/policy.yaml`.
 
+**A policy change has no effect in the proxy**
+The proxy reloads `policy.yaml` within `GUARD_POLICY_RELOAD_INTERVAL` seconds (default 2) of the
+next request, or at once on `kill -HUP <pid>`. Check that `policy_version` in `/healthz` changed.
+If it did not, look for `policy_reload_failed` in the log: an invalid file is rejected and the
+previous policy stays active until the file is fixed. `GUARD_POLICY_RELOAD_INTERVAL=0` turns
+the automatic check off. The proxy watches the file named by `GUARD_POLICY_PATH`, not a copy.
+
 **`invalid policy policy.yaml: ... Extra inputs are not permitted`**
 A key in `policy.yaml` is misspelled or not supported for that category. The error names the
 field; [policy.md](policy.md) lists every valid key.

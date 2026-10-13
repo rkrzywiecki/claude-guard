@@ -4,6 +4,10 @@
 on load: unknown keys, out-of-range thresholds, invalid regexes and unsupported actions are
 rejected with a readable error.
 
+Changes apply without a restart. Hooks and `scan` read the file on every run. The proxy checks
+it for changes at most every `GUARD_POLICY_RELOAD_INTERVAL` seconds (default 2, on incoming
+requests) and reloads at once on `kill -HUP <pid>`; see [proxy.md](proxy.md#policy-reload).
+
 ## How a finding becomes an action
 
 Each detector reports findings with a **category**, a **severity** (`low`, `medium`, `high`,

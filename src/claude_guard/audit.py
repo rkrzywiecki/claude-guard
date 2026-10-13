@@ -93,7 +93,8 @@ class AuditLog:
         self, path: Path, scanner: SecretScanner, *, max_bytes: int = 0, backups: int = 5
     ) -> None:
         self._path = path
-        self._scanner = scanner
+        # Public so a policy reload can swap in the new policy's masking rules.
+        self.scanner = scanner
         self._max_bytes = max_bytes
         self._backups = backups
 
@@ -117,7 +118,7 @@ class AuditLog:
             session_id=session_id,
             duration_ms=round(duration_ms, 2) if duration_ms is not None else None,
             error=self._mask(verdict.error),
-            notes=[self._scanner.mask(note) for note in verdict.notes],
+            notes=[self.scanner.mask(note) for note in verdict.notes],
             findings=[self._finding(finding) for finding in verdict.findings],
         )
 
@@ -168,10 +169,10 @@ class AuditLog:
             severity=finding.severity,
             action=finding.action,
             confidence=finding.confidence,
-            message=self._scanner.mask(finding.message),
+            message=self.scanner.mask(finding.message),
             location=finding.location,
             excerpt=self._mask(finding.excerpt),
         )
 
     def _mask(self, text: str | None) -> str | None:
-        return self._scanner.mask(text) if text is not None else None
+        return self.scanner.mask(text) if text is not None else None

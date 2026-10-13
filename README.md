@@ -304,6 +304,7 @@ Environment variables (or `.env`, see [.env.example](.env.example); an empty val
 | `GUARD_STREAM_MODE` | `buffer` | `buffer`: inspect before streaming; `audit`: stream live, inspect afterwards. |
 | `GUARD_PASSTHROUGH` | `block` | `/v1/*` endpoints the proxy cannot inspect (e.g. Files API uploads): `block` answers 403, `allow` forwards them as is. |
 | `GUARD_HOOK_LLM` | `false` | Use the LLM judge inside hooks. |
+| `GUARD_POLICY_RELOAD_INTERVAL` | `2` | Proxy: check `policy.yaml` for changes at most this often (seconds) and reload it; `0` disables the check. `kill -HUP` reloads at once. An invalid file keeps the running policy. |
 | `GUARD_INSPECTION_CACHE_SIZE` | `10000` | Request units (messages, tool definitions, system prompt) whose findings the proxy keeps for later requests of a conversation; `0` disables the cache. |
 | `GUARD_MAX_BODY_BYTES` | `33554432` (32 MiB) | Larger request bodies get HTTP 413 `request_too_large`. Raise it for big Message Batches. |
 | `GUARD_MAX_STREAM_BYTES` | `33554432` (32 MiB) | Buffered stream above this size is not inspected: error event (`closed`) or delivered uninspected (`open`). |

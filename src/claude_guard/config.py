@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Request units (messages, tool definitions, system prompt) whose findings are kept for later
     # requests of the same conversation; 0 disables the cache.
     inspection_cache_size: int = Field(default=10_000, ge=0)
+    # Proxy: check policy.yaml for changes at most this often (seconds) and reload it; 0 disables
+    # the check (SIGHUP still reloads).
+    policy_reload_interval: float = Field(default=2.0, ge=0)
     audit_path: Path = Path("logs/audit.jsonl")
     # Rotate the audit log at this size (0 disables rotation), keeping this many old files.
     audit_max_bytes: int = Field(default=10 * 1024 * 1024, ge=0)
@@ -355,9 +358,16 @@ class Policy(BaseModel):
 def load_policy(path: Path) -> Policy:
     """Read and validate a policy file, raising PolicyError with a readable message."""
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise PolicyError(f"policy file not found: {path}") from exc
+    return parse_policy(text, path)
+
+
+def parse_policy(text: str, path: Path) -> Policy:
+    """Validate policy YAML read from `path` (named in error messages)."""
+    try:
+        raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise PolicyError(f"cannot parse {path}: {exc}") from exc
 

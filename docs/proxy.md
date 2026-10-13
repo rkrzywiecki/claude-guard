@@ -16,7 +16,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | Endpoint | Behaviour |
 |----------|-----------|
 | `POST /v1/messages` | Inspected request and response (query string such as `?beta=true` is kept) |
-| `GET /healthz` | `{"status": "ok", "stream_mode": ..., "fail_mode": ...}` |
+| `GET /healthz` | `{"status": "ok", "stream_mode": ..., "fail_mode": ..., "policy_version": ...}` (`policy_version`: first 12 hex digits of the policy file's SHA-256) |
 | `GET /metrics` | Prometheus text format counters (below) |
 | `POST /v1/messages/count_tokens` | Secrets redacted; never blocked (no model runs) |
 | `POST /v1/messages/batches` | Every `requests[].params` inspected as a request (see [Message Batches](#message-batches)) |
@@ -245,6 +245,8 @@ claude_guard_unauthorized_total 0
 claude_guard_inspection_cache_hits_total 1260
 claude_guard_inspection_cache_misses_total 96
 claude_guard_inspection_cache_entries 96
+claude_guard_policy_reloads_total 2
+claude_guard_policy_reload_errors_total 0
 ```
 
 `verdicts_total` has a series for every direction/action pair. `guard_errors_total` counts
@@ -252,7 +254,29 @@ verdicts that carry an engine error (fail mode applied). The `inspection_cache` 
 request units (messages, tool definitions, system prompt) whose findings were reused or had to
 be computed, and the units cached now (see
 [architecture.md](architecture.md#inspection-cache)); they are absent with
-`GUARD_INSPECTION_CACHE_SIZE=0`. Counters are per process and reset on restart.
+`GUARD_INSPECTION_CACHE_SIZE=0`. `policy_reloads_total` and `policy_reload_errors_total` count
+policy reloads (see [Policy reload](#policy-reload)). Counters are per process and reset on
+restart.
+
+## Policy reload
+
+The proxy applies changes to `policy.yaml` without a restart:
+
+- **On change:** before handling a request, at most every `GUARD_POLICY_RELOAD_INTERVAL` seconds
+  (default 2), the proxy compares the file's modification time, size and inode with the last
+  version it loaded. `0` turns the check off.
+- **On SIGHUP:** `kill -HUP <pid>` reloads at once, also with the check off.
+
+A changed file is parsed and validated first. Only a valid policy replaces the running one; an
+invalid, unreadable or missing file keeps the current policy, logs `policy_reload_failed` with
+the error (once per file version) and counts `claude_guard_policy_reload_errors_total`. Saving
+the file again retries. A save that leaves the content unchanged does nothing. A successful
+reload logs `policy_reloaded` with the old and new `policy_version` (also in `/healthz`).
+
+Requests already being inspected finish with the previous policy. The inspection cache starts
+empty after a reload, since findings depend on the policy. The guard tamper rules keep an agent
+from editing the policy file through the proxy or hooks (see
+[policy.md](policy.md#guard-tampering)).
 
 ## Logging
 

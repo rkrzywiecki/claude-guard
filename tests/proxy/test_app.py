@@ -123,7 +123,12 @@ def parse_sse(body: bytes) -> tuple[list[str | None], dict[str, Any] | None]:
 
 async def test_healthz(client: httpx.AsyncClient) -> None:
     response = await client.get("/healthz")
-    assert response.json() == {"status": "ok", "stream_mode": "buffer", "fail_mode": "closed"}
+    assert response.json() == {
+        "status": "ok",
+        "stream_mode": "buffer",
+        "fail_mode": "closed",
+        "policy_version": None,  # no policy file: the engine was given Policy()
+    }
 
 
 async def test_clean_request_is_forwarded(

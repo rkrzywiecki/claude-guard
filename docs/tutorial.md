@@ -179,7 +179,8 @@ secrets.acton
 
 When you are happy with your policy, make it permanent by setting
 `GUARD_POLICY_PATH=my-policy.yaml` in `.env` (or edit `policy.yaml` directly). Every rule and
-option is described in [policy.md](policy.md).
+option is described in [policy.md](policy.md). A running proxy picks up policy edits within a
+couple of seconds, without a restart.
 
 ## 4. Guard Claude Code with the proxy
 

@@ -32,6 +32,7 @@ flowchart LR
 | `config.py` | `Settings` (env `GUARD_*`, `.env`), `Policy` models, `load_policy()` |
 | `payload.py` | Extracts text segments from payloads and writes redactions back by location |
 | `engine.py` | `GuardEngine`: runs detectors, judge, history cap, fail mode, audit |
+| `policy_reload.py` | `PolicyReloader`: reloads a changed `policy.yaml` into the proxy's engine (mtime check, SIGHUP) |
 | `cache.py` | `InspectionCache`: findings per request unit (message, tool definition, system prompt), reused on later requests |
 | `detectors/` | `secrets`, `injection`, `commands`, `exfiltration` (heuristics), `custom` (`custom_rules` from the policy), `tools` (per-tool allow/deny/warn) and `llm_judge` |
 | `detectors/obfuscation.py` | Shared normalization (invisible characters, homoglyphs, leetspeak, spacing) and base64/hex/percent decoding |
@@ -110,6 +111,16 @@ message), so a unit's findings depend only on its own extracted segments and too
 - **Scope:** in memory, per engine (one policy), LRU with `GUARD_INSPECTION_CACHE_SIZE` entries
   (default 10,000; `0` disables it). Shared across sessions: identical units give identical
   findings. Hooks gain nothing from it (a new process per event).
+
+### Policy reload
+
+Everything the engine derives from the policy (detectors, secret scanner with custom masking
+rules, inspection cache, judge) lives in one state object. `GuardEngine.reload_policy` builds a
+new one and swaps it in one assignment; an inspection takes the state once at its start, so it
+never mixes two policies and requests in flight finish with the old one. The audit log switches
+to the new masking rules. In the proxy, `PolicyReloader` decides when to reload (see
+[proxy.md](proxy.md#policy-reload)); a policy that fails validation never replaces the running
+one.
 
 ## Audit log
 
