@@ -124,10 +124,9 @@ class BenchReport(BaseModel):
 # Payloads
 
 
-# Files the shipped policy flags: detectors quote attack patterns, and `secrets: SecretsPolicy`
-# style annotations look like credential assignments. Excluded so the benchmark measures the
-# clean path (allow), the one ordinary traffic takes.
-FLAGGED_FILES = frozenset({"config.py", "models.py", "injection.py", "llm_judge.py"})
+# Files the shipped policy flags: detectors quote attack patterns. Excluded so the benchmark
+# measures the clean path (allow), the one ordinary traffic takes.
+FLAGGED_FILES = frozenset({"injection.py", "llm_judge.py"})
 
 
 @cache

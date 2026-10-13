@@ -80,7 +80,7 @@ Obfuscation handling:
 | `nrb` | high | 0.75 | Polish 26-digit account number (mod-97 as `PL` IBAN) |
 | `payment_card` | high | 0.85 | 13–19 digits, known issuer prefix, Luhn checksum |
 | `pesel` | high | 0.80 | 11 digits, PESEL checksum and valid encoded birth date |
-| `credential_assignment` | high | 0.65 | `password`/`secret`/`api_key`/`*_token = value`; placeholders (`${VAR}`, `<your-key>`, `changeme`, `***`), env lookups and code references are ignored |
+| `credential_assignment` | high | 0.65 | `password`/`secret`/`api_key`/`*_token = value`; placeholders (`${VAR}`, `<your-key>`, `changeme`, `***`), env lookups and code references are ignored, and so are `key: value` matches that are type annotations (`api_key: SecretStr \| None`) or prose (`a secret: detectors ...`); quoted values and `=` assignments always count |
 | `encoded_secret` | as the decoded rule | as the decoded rule | base64 run that decodes to text containing any rule above (e.g. an encoded `.env`) |
 | `high_entropy` | medium | 0.40 | Mixed-case alphanumeric token with a digit, not hex, entropy ≥ `entropy_threshold`. Paths (`/...`, `~/.../`) are judged per segment, and slugs of short words joined by `-`/`_` (like Claude Code project directory names) are skipped. Below the default threshold on purpose, so it only warns. |
 

@@ -210,6 +210,43 @@ async def test_false_positives_ignored(detector: SecretsDetector, text: str) -> 
     assert await rules(detector, text_ctx(text)) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Python type annotations (claude_guard/config.py)
+        'anthropic_api_key: SecretStr | None = Field(default=None, alias="ANTHROPIC_API_KEY")',
+        "proxy_token: SecretStr | None = None",
+        "client_secret: Optional | None",
+        "api_key: SecretStr = SecretStr(value)",
+        # Prose (claude_guard/models.py docstring)
+        "`excerpt` must never contain a raw secret: detectors store a redacted preview only.",
+        "The password: whatever you choose must be long.",
+    ],
+)
+async def test_annotations_and_prose_are_not_assignments(
+    detector: SecretsDetector, text: str
+) -> None:
+    assert await rules(detector, text_ctx(text)) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password: letmein",  # YAML, end of line
+        "password: hunter22 # staging only",
+        "password: Hunter2Pw",
+        "db:\n  password: correcthorse\n  user: app",
+        "api_key: q8Lm2Zr7Tn | base64 -d",  # not an identifier
+        'password: "letmein" | grep x',  # quoted: always an assignment
+        "secret: s3cr3tvalue then more text",  # not a plain lowercase word
+        "PASSWORD=letmein more words",  # `=` always counts
+        "api_key = SecretValue | None",
+    ],
+)
+async def test_assignments_still_flagged(detector: SecretsDetector, text: str) -> None:
+    assert await rules(detector, text_ctx(text)) == ["credential_assignment"]
+
+
 async def test_custom_allowlist() -> None:
     policy = Policy(secrets=SecretsPolicy(allowlist=[r"^gh" + r"p_Ab3d"]))
     assert await rules(SecretsDetector(policy), text_ctx(GITHUB_TOKEN)) == []

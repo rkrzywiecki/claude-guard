@@ -22,6 +22,8 @@ from claude_guard.detectors.obfuscation import decoded_candidates, strip_invisib
 from claude_guard.models import Category, Finding, InspectionContext, Severity, Span
 
 Validator = Callable[[str], bool]
+# Like Validator, but sees the whole match: for rules whose context decides (text after the value).
+MatchFilter = Callable[[re.Match[str]], bool]
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class SecretRule:
     confidence: float
     group: str | int = 0
     validator: Validator | None = None
+    match_filter: MatchFilter | None = None
 
 
 # --- Validators ---------------------------------------------------------------
@@ -138,6 +141,30 @@ def assigned_value_valid(value: str) -> bool:
     if _PLACEHOLDER.search(value) or "(" in value or "[" in value:
         return False
     return not _DOTTED_IDENTIFIER.fullmatch(value)
+
+
+_TYPE_NAME = re.compile(r"[A-Za-z_]+")  # no digits: random secrets almost always have some
+_ANNOTATION_TAIL = re.compile(r"\s*(?:\||=(?!=))")
+_LOWERCASE_WORD = re.compile(r"[a-z]+")
+_PROSE_TAIL = re.compile(r" [a-z]")
+
+
+def assignment_context_valid(match: re.Match[str]) -> bool:
+    """Reject `key: value` matches that are not assignments.
+
+    Only unquoted values after `:` are judged; `=` and quoted values always count:
+    - a type annotation: a name without digits followed by `|` or `=`
+      (`api_key: SecretStr | None = ...`),
+    - prose: a lowercase word followed by another word (`never log a secret: detectors mask it`).
+    A plain YAML value at the end of a line is kept.
+    """
+    if match.group("sep") != ":" or match.group("quote"):
+        return True
+    value = match.group("value")
+    tail = match.string[match.end("value") :]
+    if _TYPE_NAME.fullmatch(value) and _ANNOTATION_TAIL.match(tail):
+        return False
+    return not (_LOWERCASE_WORD.fullmatch(value) and _PROSE_TAIL.match(tail))
 
 
 # --- Rules --------------------------------------------------------------------
@@ -306,12 +333,14 @@ SPECIFIC_RULES: tuple[SecretRule, ...] = (
         "Credential assigned in code or config",
         re.compile(
             r"(?i)(?:(?<![A-Za-z0-9])|(?<=[_-]))(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token"
-            r"|client[_-]?secret)\b[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"',;]{6,})"
+            r"|client[_-]?secret)\b[\"']?\s*(?P<sep>[:=])\s*(?P<quote>[\"'])?"
+            r"(?P<value>[^\s\"',;]{6,})"
         ),
         Severity.HIGH,
         0.65,
         group="value",
         validator=assigned_value_valid,
+        match_filter=assignment_context_valid,
     ),
 )
 
@@ -401,6 +430,8 @@ class SecretScanner:
                 if end == start or overlaps(start, end) or self._allowlisted(value):
                     continue
                 if rule.validator and not rule.validator(value):
+                    continue
+                if rule.match_filter and not rule.match_filter(match):
                     continue
                 claimed.append((start, end))
                 hits.append(SecretHit(rule, start, end))
